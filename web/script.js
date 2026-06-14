@@ -15,12 +15,20 @@ let isTyping = false;
 
 // Inicializa a interface
 document.addEventListener('DOMContentLoaded', () => {
+    // Desativar o Menu de Contexto do Navegador (Botão Direito)
+    document.addEventListener('contextmenu', event => event.preventDefault());
+
     const usernameInput = document.getElementById('login-username');
     if (usernameInput) usernameInput.focus();
     
     // Captura Enter nos campos de login
     document.getElementById('login-username').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
     document.getElementById('login-password').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
+    
+    // Captura Enter nos campos de registro
+    document.getElementById('register-username').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerRegistro(); });
+    document.getElementById('register-password').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerRegistro(); });
+    document.getElementById('register-password-confirm').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerRegistro(); });
     
     // Aguarda carregar a API do PyWebView
     esperarApiEParent();
@@ -99,14 +107,27 @@ window.autenticacaoResposta = function(dados) {
     const statusEl = document.getElementById('login-status');
     const action = dados.action;
     
-    // Sempre re-habilita os botões de login/registro ao receber resposta
+    // Sempre re-habilita os botões de login/registro e os do modal de registro ao receber resposta
     document.getElementById('btn-login').disabled = false;
     document.getElementById('btn-register').disabled = false;
+    const btnConfirmReg = document.getElementById('btn-confirm-register');
+    const btnCancelReg = document.getElementById('btn-cancel-register');
+    if (btnConfirmReg) btnConfirmReg.disabled = false;
+    if (btnCancelReg) btnCancelReg.disabled = false;
     
     if (status === 'success') {
         if (action === 'register') {
+            // Fecha modal de registro
+            document.getElementById('register-modal').style.display = 'none';
+            
             statusEl.textContent = "Conta criada com sucesso! Faça login abaixo.";
             statusEl.style.color = '#008000';
+            
+            // Preenche o campo de usuário com o apelido registrado
+            const registeredUser = document.getElementById('register-username').value.trim();
+            if (registeredUser) {
+                document.getElementById('login-username').value = registeredUser;
+            }
             
             // Limpa o campo de senha e foca nele
             document.getElementById('login-password').value = '';
@@ -129,7 +150,16 @@ window.autenticacaoResposta = function(dados) {
         // Solicita o estado geral ao motor do Python
         window.pywebview.api.request_state();
     } else {
-        window.exibirAlerta(dados.message || msg || "Erro de autenticação.");
+        // Se falhou o registro, exibe no status do modal de registro
+        if (action === 'register') {
+            const regStatusEl = document.getElementById('register-status');
+            if (regStatusEl) {
+                regStatusEl.textContent = dados.message || msg || "Erro de registro.";
+                regStatusEl.style.color = '#800000';
+            }
+        } else {
+            window.exibirAlerta(dados.message || msg || "Erro de autenticação.");
+        }
     }
 };
 
@@ -300,24 +330,48 @@ function fazerLogin() {
     });
 }
 
+function abrirModalRegistro() {
+    document.getElementById('register-modal').style.display = 'flex';
+    document.getElementById('register-username').value = '';
+    document.getElementById('register-password').value = '';
+    document.getElementById('register-password-confirm').value = '';
+    document.getElementById('register-status').textContent = '';
+    document.getElementById('register-username').focus();
+}
+
+function fecharModalRegistro() {
+    document.getElementById('register-modal').style.display = 'none';
+}
+
 function fazerRegistro() {
     const ip = document.getElementById('server-ip').value.trim();
     const porta = document.getElementById('server-port').value.trim();
-    const user = document.getElementById('login-username').value.trim();
-    const pass = document.getElementById('login-password').value.trim();
-    const statusEl = document.getElementById('login-status');
+    const user = document.getElementById('register-username').value.trim();
+    const pass = document.getElementById('register-password').value.trim();
+    const passConfirm = document.getElementById('register-password-confirm').value.trim();
+    const statusEl = document.getElementById('register-status');
     
     // Reseta cor para vermelho padrão
     statusEl.style.color = '#800000';
+    statusEl.textContent = '';
     
-    if(!user || !pass || !ip || !porta) {
+    if(!user || !pass || !passConfirm || !ip || !porta) {
         statusEl.textContent = 'Preencha todos os campos.';
+        return;
+    }
+    
+    if (pass !== passConfirm) {
+        statusEl.textContent = 'As senhas não coincidem.';
         return;
     }
     
     // Desabilita botões para evitar clique duplo e sinalizar carregamento
     document.getElementById('btn-login').disabled = true;
     document.getElementById('btn-register').disabled = true;
+    const btnConfirmReg = document.getElementById('btn-confirm-register');
+    const btnCancelReg = document.getElementById('btn-cancel-register');
+    if (btnConfirmReg) btnConfirmReg.disabled = true;
+    if (btnCancelReg) btnCancelReg.disabled = true;
     
     statusEl.textContent = 'Conectando ao servidor...';
     
@@ -329,11 +383,15 @@ function fazerRegistro() {
             statusEl.textContent = 'Erro ao conectar ao servidor.';
             document.getElementById('btn-login').disabled = false;
             document.getElementById('btn-register').disabled = false;
+            if (btnConfirmReg) btnConfirmReg.disabled = false;
+            if (btnCancelReg) btnCancelReg.disabled = false;
         }
     }).catch(err => {
         statusEl.textContent = 'Erro de rede na ponte API.';
         document.getElementById('btn-login').disabled = false;
         document.getElementById('btn-register').disabled = false;
+        if (btnConfirmReg) btnConfirmReg.disabled = false;
+        if (btnCancelReg) btnCancelReg.disabled = false;
     });
 }
 

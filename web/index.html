@@ -51,11 +51,54 @@
 
             <div class="field-row" style="justify-content: flex-end; gap: 8px;">
                 <button id="btn-login" class="default-btn" onclick="fazerLogin()">Entrar</button>
-                <button id="btn-register" onclick="fazerRegistro()">Registrar</button>
+                <button id="btn-register" onclick="abrirModalRegistro()">Registrar</button>
             </div>
         </div>
     </div>
 </div>
+
+<!-- Janela de Registro (Prompt de Sistema) -->
+<div id="register-modal" class="modal-overlay" style="display: none;">
+    <div class="window" style="width: 320px;">
+        <div class="title-bar pywebview-drag-region">
+            <div class="title-bar-text">
+                <span class="title-icon">💾</span> ChatPy - Registrar
+            </div>
+            <div class="title-bar-controls">
+                <button aria-label="Minimize" disabled></button>
+                <button aria-label="Maximize" disabled></button>
+                <button aria-label="Close" onclick="fecharModalRegistro()"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <div style="text-align: center; margin-bottom: 15px; padding: 10px; background: #000080; border: 2px solid; border-color: #808080 #fff #fff #808080;">
+                <h2 style="margin: 0; font-family: monospace; letter-spacing: 2px; color: #ffffff;">Novo Registro</h2>
+                <small style="color: #dfdfdf;">Crie sua conta no ChatPy</small>
+            </div>
+            
+            <div class="field-row-stacked" style="margin-bottom: 10px;">
+                <label for="register-username">Novo Usuário:</label>
+                <input id="register-username" type="text" placeholder="Apelido..." />
+            </div>
+            <div class="field-row-stacked" style="margin-bottom: 10px;">
+                <label for="register-password">Senha:</label>
+                <input id="register-password" type="password" placeholder="Senha..." />
+            </div>
+            <div class="field-row-stacked" style="margin-bottom: 15px;">
+                <label for="register-password-confirm">Confirmar Senha:</label>
+                <input id="register-password-confirm" type="password" placeholder="Repita a senha..." />
+            </div>
+
+            <div id="register-status" class="status-msg" style="min-height: 18px; margin-bottom: 10px; color: #800000; font-weight: bold; font-size: 11px;"></div>
+
+            <div class="field-row" style="justify-content: flex-end; gap: 8px;">
+                <button id="btn-confirm-register" class="default-btn" onclick="fazerRegistro()">Confirmar Registro</button>
+                <button id="btn-cancel-register" onclick="fecharModalRegistro()">Cancelar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 
 <!-- Janela Principal do Chat (mIRC Style) -->
 <div id="main-app" class="window main-window" style="display: none;">

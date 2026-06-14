@@ -309,6 +309,13 @@ class ChatEngine:
 
     async def enviar_mensagem(self, room, text):
         # Valida atalhos de botões ou comandos de texto
+        if text.strip() == "/help":
+            await self.enviar_json({
+                "type": "help",
+                "room": room
+            })
+            return
+
         if text.startswith("/msg "):
             # Envia DM
             partes = text.split(" ", 2)
