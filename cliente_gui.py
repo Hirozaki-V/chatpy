@@ -126,6 +126,10 @@ def callback_file_share(dados):
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.receberArquivoJS) window.receberArquivoJS({dados_json});")
 
+def callback_forcar_atualizacao(dados):
+    if window and pagina_carregada:
+        window.evaluate_js("if(window.pywebview) window.pywebview.api.request_state();")
+
 class JsApi:
     def __init__(self):
         self._maximized = False
@@ -138,6 +142,10 @@ class JsApi:
             else:
                 window.maximize()
                 self._maximized = True
+
+    def resize_window(self, w, h):
+        if window:
+            window.resize(w, h)
 
     def enviar_arquivo_base64(self, room, filename, data):
         asyncio.run_coroutine_threadsafe(
@@ -313,6 +321,9 @@ def main():
     engine.registrar_callback("on_join_password_required", callback_join_password_required)
     engine.registrar_callback("on_friend_request", callback_friend_request)
     engine.registrar_callback("on_file_share", callback_file_share)
+    engine.registrar_callback("on_friend_removed", callback_forcar_atualizacao)
+    engine.registrar_callback("on_friend_added", callback_forcar_atualizacao)
+    engine.registrar_callback("on_friend_status_update", callback_forcar_atualizacao)
 
     # 5. Inicializa e abre a janela pywebview
     web_dir = get_web_directory()

@@ -379,6 +379,7 @@ input[type="text"], input[type="password"], select {
     line-height: 1.4;
     word-break: break-all;
     margin: 2px 0;
+    white-space: pre-wrap; /* Força quebras de linha enviadas pelo servidor */
 }
 .msg-time {
     color: #808080;
@@ -479,4 +480,15 @@ input[type="color"]::-webkit-color-swatch {
     80% { transform: translate(-1px, -1px) rotate(1deg); }
     90% { transform: translate(2px, 2px) rotate(0deg); }
     100% { transform: translate(1px, -2px) rotate(-1deg); }
+}
+
+.resize-handle {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 14px;
+    height: 14px;
+    cursor: se-resize;
+    z-index: 9999;
+    background: repeating-linear-gradient(135deg, transparent, transparent 2px, #808080 2px, #808080 3px, #fff 3px, #fff 4px);
 }

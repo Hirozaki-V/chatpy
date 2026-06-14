@@ -4,7 +4,7 @@ let myColor = '#000000';
 let myRole = 'user';
 let activeRooms = {};        // { nome_sala: count_usuarios }
 let roomsProtected = {};     // { nome_sala: boolean }
-let joinedRooms = new Set(['#geral']);
+let joinedRooms = ['#geral'];
 let friendsList = [];
 let pendingRequests = [];
 let usersInActiveRoom = [];
@@ -72,6 +72,25 @@ document.addEventListener('DOMContentLoaded', () => {
             fileInput.value = '';
         });
     }
+
+    const resizeHandle = document.getElementById('resize-handle');
+    if (resizeHandle) {
+        resizeHandle.onmousedown = (e) => {
+            isResizing = true;
+            e.preventDefault();
+        };
+    }
+
+    // Tornar modais arrastáveis
+    const modais = [
+        'login-modal',
+        'register-modal',
+        'dialog-create-room',
+        'dialog-explore-rooms',
+        'dialog-room-password',
+        'dialog-friends'
+    ];
+    modais.forEach(tornarModalArrastavel);
 
     // Aguarda carregar a API do PyWebView
     esperarApiEParent();
@@ -314,7 +333,7 @@ window.chamarAtencaoNudge = function(dados) {
 };
 
 window.removerAba = function(room) {
-    joinedRooms.delete(room);
+    joinedRooms = joinedRooms.filter(r => r !== room);
     delete messagesCache[room];
     delete unreadCounts[room];
     if (activeTab === room) {
@@ -463,7 +482,7 @@ function desconectarEVoltar() {
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
     document.getElementById('login-status').textContent = '';
-    joinedRooms = new Set(['#geral']);
+    joinedRooms = ['#geral'];
     activeTab = '#geral';
     messagesCache = {};
     unreadCounts = {};
@@ -483,7 +502,7 @@ function renderizarAbas() {
     const list = document.getElementById('tabs-list');
     list.innerHTML = '';
     
-    joinedRooms.forEach(room => {
+    joinedRooms.forEach((room, index) => {
         const isUnread = unreadCounts[room] && unreadCounts[room] > 0;
         const displayUnread = isUnread ? ` (${unreadCounts[room]})` : '';
         const itemClass = (room === activeTab) ? 'active' : (isUnread ? 'unread' : '');
@@ -491,6 +510,30 @@ function renderizarAbas() {
         const li = document.createElement('li');
         li.className = itemClass;
         li.textContent = room + displayUnread;
+        li.draggable = true;
+        
+        li.ondragstart = (e) => {
+            e.dataTransfer.setData('text/plain', room);
+            e.dataTransfer.effectAllowed = 'move';
+        };
+        
+        li.ondragover = (e) => {
+            e.preventDefault();
+        };
+        
+        li.ondrop = (e) => {
+            e.preventDefault();
+            const draggedRoom = e.dataTransfer.getData('text/plain');
+            if (draggedRoom !== room) {
+                const dragIndex = joinedRooms.indexOf(draggedRoom);
+                const targetIndex = joinedRooms.indexOf(room);
+                if (dragIndex > -1 && targetIndex > -1) {
+                    joinedRooms.splice(dragIndex, 1);
+                    joinedRooms.splice(targetIndex, 0, draggedRoom);
+                    renderizarAbas();
+                }
+            }
+        };
         
         li.onclick = () => selecionarAba(room);
         
@@ -523,8 +566,8 @@ function selecionarAba(room) {
     
     renderizarAbas();
     
-    if (room.startsWith('#') && !joinedRooms.has(room)) {
-        joinedRooms.add(room);
+    if (room.startsWith('#') && !joinedRooms.includes(room)) {
+        joinedRooms.push(room);
         window.pywebview.api.join_room(room);
     }
     
@@ -628,36 +671,52 @@ function renderizarAmigos() {
 }
 
 function renderizarConvites() {
-    const box = document.getElementById('friend-requests-box');
+    const navBell = document.getElementById('nav-bell');
+    const bellCount = document.getElementById('bell-count');
     const list = document.getElementById('requests-list');
-    list.innerHTML = '';
+    
+    if (list) {
+        list.innerHTML = '';
+    }
     
     if (pendingRequests.length > 0) {
-        box.style.display = 'block';
-        pendingRequests.forEach(req => {
-            const li = document.createElement('li');
-            li.style.display = 'flex';
-            li.style.justifyContent = 'space-between';
-            li.style.alignItems = 'center';
-            li.style.marginBottom = '4px';
-            li.innerHTML = `
-                <span>${req}</span>
-                <div style="display:flex; gap:2px;">
-                    <button onclick="responderConvite('${req}', true)" style="padding:1px 4px; font-size:10px;">✓</button>
-                    <button onclick="responderConvite('${req}', false)" style="padding:1px 4px; font-size:10px; color:red;">✕</button>
-                </div>
-            `;
-            list.appendChild(li);
-        });
+        if (navBell) {
+            navBell.style.display = 'block';
+        }
+        if (bellCount) {
+            bellCount.textContent = pendingRequests.length;
+        }
+        
+        tocarBipCurto();
+        
+        if (list) {
+            pendingRequests.forEach(req => {
+                const li = document.createElement('li');
+                li.style.display = 'flex';
+                li.style.justifyContent = 'space-between';
+                li.style.alignItems = 'center';
+                li.style.marginBottom = '4px';
+                li.innerHTML = `
+                    <span>${req}</span>
+                    <div style="display:flex; gap:2px;">
+                        <button onclick="responderConvite('${req}', true)" style="padding:1px 4px; font-size:10px;">✓</button>
+                        <button onclick="responderConvite('${req}', false)" style="padding:1px 4px; font-size:10px; color:red;">✕</button>
+                    </div>
+                `;
+                list.appendChild(li);
+            });
+        }
     } else {
-        box.style.display = 'none';
+        if (navBell) {
+            navBell.style.display = 'none';
+        }
     }
 }
 
 function abrirDM(username) {
     const tabName = `@${username}`;
-    if (!joinedRooms.has(tabName)) {
-        joinedRooms.add(tabName);
+    if (!joinedRooms.includes(tabName)) {
+        joinedRooms.push(tabName);
     }
     selecionarAba(tabName);
 }
@@ -770,7 +829,7 @@ function atualizarExplorarSalas() {
         
         Object.keys(activeRooms).forEach(room => {
             const count = activeRooms[room];
-            const isProtected = roomsProtected[room] ? 'Sim' : 'Não';
+            const isProtected = roomsProtected[room] ? '🔒 Sim' : '🔓 Não';
             
             const tr = document.createElement('tr');
             tr.innerHTML = `
@@ -786,8 +845,8 @@ function atualizarExplorarSalas() {
 
 function entrarNaSalaExplorador(room) {
     fecharDialog('dialog-explore-rooms');
-    if (!joinedRooms.has(room)) {
-        joinedRooms.add(room);
+    if (!joinedRooms.includes(room)) {
+        joinedRooms.push(room);
     }
     selecionarAba(room);
 }
@@ -926,4 +985,86 @@ function inserirEmoji(emoji) {
         fecharPainelEmojis();
         input.focus();
     }
+}
+
+// --- NOVOS AUXILIARES DE IMERSÃO NATIVA ---
+
+// Redimensionamento de Janela
+let isResizing = false;
+document.addEventListener('mousemove', (e) => {
+    if (isResizing && window.pywebview && window.pywebview.api && window.pywebview.api.resize_window) {
+        window.pywebview.api.resize_window(e.clientX + 5, e.clientY + 5);
+    }
+});
+
+document.addEventListener('mouseup', () => {
+    isResizing = false;
+});
+
+// Tornar modais arrastáveis
+function tornarModalArrastavel(dialogId) {
+    const modal = document.getElementById(dialogId);
+    if (!modal) return;
+    const windowEl = modal.querySelector('.window');
+    const titleBar = modal.querySelector('.title-bar');
+    if (!windowEl || !titleBar) return;
+
+    titleBar.style.cursor = 'move';
+    
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    titleBar.addEventListener('mousedown', (e) => {
+        if (e.target.tagName.toLowerCase() === 'button') return;
+        isDragging = true;
+        
+        if (windowEl.style.position !== 'absolute') {
+            const rect = windowEl.getBoundingClientRect();
+            windowEl.style.position = 'absolute';
+            windowEl.style.margin = '0';
+            windowEl.style.left = `${rect.left}px`;
+            windowEl.style.top = `${rect.top}px`;
+        }
+        
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = parseFloat(windowEl.style.left) || 0;
+        startTop = parseFloat(windowEl.style.top) || 0;
+        
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const deltaX = e.clientX - startX;
+        const deltaY = e.clientY - startY;
+        windowEl.style.left = `${startLeft + deltaX}px`;
+        windowEl.style.top = `${startTop + deltaY}px`;
+    });
+
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+}
+
+// Bip curto para notificações e cliques
+function tocarBipCurto() {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
+        gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.start();
+        setTimeout(() => {
+            oscillator.stop();
+            audioCtx.close();
+        }, 80);
+    } catch(e) {}
 }

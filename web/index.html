@@ -133,6 +133,7 @@
             </ul>
         </li>
         <li role="menuitem" onclick="mostrarAjuda()">Ajuda</li>
+        <li id="nav-bell" style="display:none; color:#800000; font-weight:bold;" onclick="abrirGerenciarAmigos()">🔔 Convites (<span id="bell-count">0</span>)</li>
     </ul>
 
     <div class="window-body app-container">
@@ -201,13 +202,6 @@
                         <!-- Lista de amigos -->
                     </ul>
                 </div>
-
-                <div id="friend-requests-box" class="requests-panel" style="display: none; padding: 4px; border-top: 2px solid #fff;">
-                    <div style="font-weight: bold; margin-bottom: 2px; color: #000080;">Convites Pendentes:</div>
-                    <ul id="requests-list" style="list-style: none; padding: 0; margin: 0;">
-                        <!-- Convites pendentes -->
-                    </ul>
-                </div>
             </div>
 
         </div>
@@ -233,6 +227,7 @@
                 <label for="color-select">Cor:</label>
                 <input type="color" id="color-select" value="#000000" onchange="alterarCor(this.value)" style="padding: 0; width: 35px; height: 18px; border: none; cursor: pointer;" />
             </div>
+            <div id="resize-handle" class="resize-handle"></div>
         </div>
     </div>
 </div>
@@ -249,7 +244,7 @@
         <div class="window-body">
             <div class="field-row-stacked" style="margin-bottom: 8px;">
                 <label for="new-room-name">Nome da Sala (com #):</label>
-                <input id="new-room-name" type="text" value="#" />
+                <input id="new-room-name" type="text" value="" placeholder="Ex: minhalocadora" />
             </div>
             <div class="field-row-stacked" style="margin-bottom: 12px;">
                 <label for="new-room-pass">Senha (Opcional):</label>
@@ -338,8 +333,14 @@
             </div>
             <hr style="border: 1px inset #fff; margin: 12px 0;" />
             <div style="font-weight: bold; margin-bottom: 4px; color: #000080;">Amigos Atuais:</div>
-            <div style="border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; height: 120px; overflow-y: auto;">
+            <div style="border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; height: 100px; overflow-y: auto; margin-bottom: 8px;">
                 <ul id="friends-manage-list" style="list-style: none; padding: 0; margin: 0; font-size: 12px;">
+                    <!-- Gerado dinamicamente -->
+                </ul>
+            </div>
+            <div style="font-weight: bold; margin-bottom: 4px; color: #000080;">Convites Pendentes:</div>
+            <div style="border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; height: 70px; overflow-y: auto;">
+                <ul id="requests-list" style="list-style: none; padding: 0; margin: 0; font-size: 11px;">
                     <!-- Gerado dinamicamente -->
                 </ul>
             </div>
