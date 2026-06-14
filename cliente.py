@@ -157,6 +157,13 @@ def centralizar_janela(toplevel, parent):
     dy = py + (ph - h) // 2
     toplevel.geometry(f"{w}x{h}+{dx}+{dy}")
 
+def extrair_usuario_real(user_str):
+    if " (" in user_str:
+        user_str = user_str.split(" (")[0]
+    if "]" in user_str:
+        user_str = user_str.split("] ")[-1]
+    return user_str.strip()
+
 # =========================================================
 # MODO JANELA (GUI PRINCIPAL E RESPONSIVA)
 # =========================================================
@@ -178,7 +185,6 @@ def iniciar_modo_gui(janela):
     listbox_abertas = None
     listbox_usuarios = None
     listbox_amigos = None
-    listbox_convites = None
     
     owned_rooms = []
     active_transfers = {}
@@ -203,6 +209,8 @@ def iniciar_modo_gui(janela):
     user_role = "user"
     dono_sala_atual = "admin"
     atualizar_painel_moderacao = None
+    lista_convites_pendentes = []
+    btn_ver_convites = None
     
     fila_rede = queue.Queue()
     
@@ -799,9 +807,9 @@ def iniciar_modo_gui(janela):
             pass
 
     def processar_fila_rede():
-        nonlocal listbox_salas, listbox_usuarios, listbox_amigos, listbox_convites
+        nonlocal listbox_salas, listbox_usuarios, listbox_amigos
         nonlocal dono_sala_atual, user_role, usuario_atual, config_local, owned_rooms, dialog_banidos_listbox
-        nonlocal salas_protegidas_estado, dialog_busca_text
+        nonlocal salas_protegidas_estado, dialog_busca_text, lista_convites_pendentes, btn_ver_convites
         
         for _ in range(30):
             try:
@@ -841,10 +849,6 @@ def iniciar_modo_gui(janela):
                 room = dados.get("room")
                 prot = dados.get("protected", False)
                 salas_protegidas_estado[room] = prot
-                # Adiciona sala ao explorador
-                if listbox_salas:
-                    # reconstrói lista
-                    enviar_json(cliente_socket, {"type": "join", "room": sala_atual})
 
             elif tipo == "room_protection_changed":
                 room = dados.get("room")
@@ -1032,9 +1036,10 @@ def iniciar_modo_gui(janela):
                 atualizar_chat(sala_atual, texto_aviso)
                 salvar_log_local(sala_atual, texto_aviso)
                 
-                # Atualiza aba/listbox convites
-                if listbox_convites:
-                    listbox_convites.insert(tk.END, rem)
+                if rem not in lista_convites_pendentes:
+                    lista_convites_pendentes.append(rem)
+                if btn_ver_convites:
+                    btn_ver_convites.config(text=f"📩 Convites ({len(lista_convites_pendentes)})")
 
             elif tipo == "friend_request_declined":
                 rem = dados.get("from")
@@ -1080,10 +1085,12 @@ def iniciar_modo_gui(janela):
                 if room == sala_atual and listbox_usuarios:
                     for idx in range(listbox_usuarios.size()):
                         val = listbox_usuarios.get(idx)
-                        if val.startswith(u_joined.get("name")):
+                        if extrair_usuario_real(val) == u_joined.get("name"):
                             listbox_usuarios.delete(idx)
                             break
-                    listbox_usuarios.insert(tk.END, f"{u_joined.get('name')} ({u_joined.get('status')})")
+                    badge = u_joined.get("badge", "")
+                    badge_prefix = f"[{badge}] " if badge else ""
+                    listbox_usuarios.insert(tk.END, f"{badge_prefix}{u_joined.get('name')} ({u_joined.get('status')})")
                 
                 atualizar_chat(room, f"[*] {u_joined.get('name')} entrou na sala.")
                 salvar_log_local(room, f"[*] {u_joined.get('name')} entrou na sala.")
@@ -1095,7 +1102,7 @@ def iniciar_modo_gui(janela):
                 if room == sala_atual and listbox_usuarios:
                     for idx in range(listbox_usuarios.size()):
                         val = listbox_usuarios.get(idx)
-                        if val.startswith(u_left):
+                        if extrair_usuario_real(val) == u_left:
                             listbox_usuarios.delete(idx)
                             break
                             
@@ -1110,9 +1117,12 @@ def iniciar_modo_gui(janela):
                 if room == sala_atual and listbox_usuarios:
                     for idx in range(listbox_usuarios.size()):
                         val = listbox_usuarios.get(idx)
-                        if val.startswith(u_name):
+                        if extrair_usuario_real(val) == u_name:
+                            badge_part = ""
+                            if "]" in val:
+                                badge_part = val.split("]")[0] + "] "
                             listbox_usuarios.delete(idx)
-                            listbox_usuarios.insert(idx, f"{u_name} ({u_status})")
+                            listbox_usuarios.insert(idx, f"{badge_part}{u_name} ({u_status})")
                             break
 
             elif tipo == "user_color_changed":
@@ -1143,7 +1153,9 @@ def iniciar_modo_gui(janela):
                 if room == sala_atual and listbox_usuarios:
                     listbox_usuarios.delete(0, tk.END)
                     for u in r_users:
-                        listbox_usuarios.insert(tk.END, f"{u.get('name')} ({u.get('status')})")
+                        badge = u.get("badge", "")
+                        badge_prefix = f"[{badge}] " if badge else ""
+                        listbox_usuarios.insert(tk.END, f"{badge_prefix}{u.get('name')} ({u.get('status')})")
                 
                 if atualizar_painel_moderacao:
                     atualizar_painel_moderacao()
@@ -1186,14 +1198,15 @@ def iniciar_modo_gui(janela):
                     for u_info in users:
                         name = u_info.get("name")
                         status = u_info.get("status")
-                        listbox_usuarios.insert(tk.END, f"{name} ({status})")
+                        badge = u_info.get("badge", "")
+                        badge_prefix = f"[{badge}] " if badge else ""
+                        listbox_usuarios.insert(tk.END, f"{badge_prefix}{name} ({status})")
                         
                 # Solicitações de amizade
                 convites = dados.get("requests", [])
-                if listbox_convites:
-                    listbox_convites.delete(0, tk.END)
-                    for rem_req in convites:
-                        listbox_convites.insert(tk.END, rem_req)
+                lista_convites_pendentes = convites
+                if btn_ver_convites:
+                    btn_ver_convites.config(text=f"📩 Convites ({len(lista_convites_pendentes)})")
                         
                 # Amigos
                 friends = dados.get("friends", [])
@@ -1841,9 +1854,9 @@ def iniciar_modo_gui(janela):
             print(f"[DND Erro]: {e}")
 
     def construir_tela_chat():
-        nonlocal notebook, listbox_salas, listbox_usuarios, listbox_amigos, listbox_convites, entry_msg
+        nonlocal notebook, listbox_salas, listbox_usuarios, listbox_amigos, entry_msg
         nonlocal lbl_typing, lbl_novas_msgs, btn_emoticons, frame_chat
-        nonlocal listbox_abertas, btn_kick, btn_ban, progress_bar, cb_status, atualizar_painel_moderacao
+        nonlocal listbox_abertas, btn_kick, btn_ban, progress_bar, cb_status, atualizar_painel_moderacao, btn_ver_convites
         
         frame_chat = tk.Frame(janela)
         frame_chat.pack(fill=tk.BOTH, expand=True)
@@ -2227,8 +2240,20 @@ def iniciar_modo_gui(janela):
         listbox_abertas.bind("<Button-3>", show_menu_abas_from_listbox)
 
         # Explorador de salas
-        lbl_salas = tk.Label(sidebar, text="Explorar Salas (Servidor)", font=("Arial", 9, "bold"), bg="#f0f0f0")
-        lbl_salas.pack(anchor="w", pady=(10, 2))
+        salas_title_frame = tk.Frame(sidebar, bg="#f0f0f0")
+        salas_title_frame.pack(fill=tk.X, pady=(10, 2))
+        
+        lbl_salas = tk.Label(salas_title_frame, text="Explorar Salas (Servidor)", font=("Arial", 9, "bold"), bg="#f0f0f0")
+        lbl_salas.pack(side=tk.LEFT, anchor="w")
+        
+        def refresh_salas():
+            try:
+                enviar_json(cliente_socket, {"type": "request_state"})
+            except:
+                pass
+                
+        btn_refresh = tk.Button(salas_title_frame, text="🔄", font=("Arial", 7), bg="#e0e0e0", fg="black", bd=1, relief="groove", command=refresh_salas)
+        btn_refresh.pack(side=tk.RIGHT, padx=(5, 0))
         
         frame_list_salas = tk.Frame(sidebar)
         frame_list_salas.pack(fill=tk.BOTH, expand=True)
@@ -2266,7 +2291,7 @@ def iniciar_modo_gui(janela):
         def double_click_usuario(event):
             selection = listbox_usuarios.curselection()
             if selection:
-                target_user = listbox_usuarios.get(selection[0]).split(' ')[0]
+                target_user = extrair_usuario_real(listbox_usuarios.get(selection[0]))
                 if target_user != usuario_atual:
                     criar_aba("@" + target_user)
         listbox_usuarios.bind("<Double-Button-1>", double_click_usuario)
@@ -2275,7 +2300,7 @@ def iniciar_modo_gui(janela):
             selection = listbox_usuarios.curselection()
             if selection:
                 user_info = listbox_usuarios.get(selection[0])
-                target_user = user_info.split(' ')[0]
+                target_user = extrair_usuario_real(user_info)
                 enviar_json(cliente_socket, {
                     "type": "moderation_action",
                     "action": "kick",
@@ -2287,7 +2312,7 @@ def iniciar_modo_gui(janela):
             selection = listbox_usuarios.curselection()
             if selection:
                 user_info = listbox_usuarios.get(selection[0])
-                target_user = user_info.split(' ')[0]
+                target_user = extrair_usuario_real(user_info)
                 if messagebox.askyesno("Banir Usuário", f"Deseja realmente banir {target_user} desta sala?"):
                     enviar_json(cliente_socket, {
                         "type": "moderation_action",
@@ -2338,7 +2363,7 @@ def iniciar_modo_gui(janela):
                 sel = listbox_usuarios.curselection()
                 if sel:
                     user_info = listbox_usuarios.get(sel[0])
-                    target_user = user_info.split(' ')[0]
+                    target_user = extrair_usuario_real(user_info)
                     if target_user != usuario_atual:
                         e_admin = (user_role == "admin")
                         e_dono = (dono_sala_atual == usuario_atual)
@@ -2353,63 +2378,65 @@ def iniciar_modo_gui(janela):
             
         listbox_usuarios.bind("<<ListboxSelect>>", on_usuario_select)
         
-        menu_usuarios = tk.Menu(janela, tearoff=0)
-        menu_usuarios.add_command(label="👞 Expulsar da Sala (Kick)", command=kick_usuario_selecionado)
-        menu_usuarios.add_command(label="🚫 Banir da Sala", command=ban_usuario_selecionado)
-
         def show_menu_usuarios(event):
             try:
-                e_admin = (user_role == "admin")
-                e_dono = (dono_sala_atual == usuario_atual)
-                
-                if not (e_admin or e_dono):
-                    return
-                    
                 listbox_usuarios.focus_set()
                 index = listbox_usuarios.nearest(event.y)
                 listbox_usuarios.selection_clear(0, tk.END)
                 listbox_usuarios.selection_set(index)
                 
                 user_info = listbox_usuarios.get(index)
-                target_user = user_info.split(' ')[0]
+                target_user = extrair_usuario_real(user_info)
+                
                 if target_user == usuario_atual:
                     return
+                
+                e_admin = (user_role == "admin")
+                e_dono = (dono_sala_atual == usuario_atual)
+                
+                menu_contexto = tk.Menu(janela, tearoff=0)
+                
+                def enviar_dm_ctx():
+                    criar_aba("@" + target_user)
                     
-                menu_usuarios.post(event.x_root, event.y_root)
+                def add_amigo_ctx():
+                    enviar_json(cliente_socket, {
+                        "type": "friend_action",
+                        "action": "add",
+                        "username": target_user
+                    })
+                    
+                menu_contexto.add_command(label="💬 Enviar DM", command=enviar_dm_ctx)
+                menu_contexto.add_command(label="➕ Adicionar Amigo", command=add_amigo_ctx)
+                
+                if (e_admin or e_dono) and not sala_atual.startswith("@"):
+                    menu_contexto.add_separator()
+                    
+                    def kick_ctx():
+                        enviar_json(cliente_socket, {
+                            "type": "moderation_action",
+                            "action": "kick",
+                            "username": target_user,
+                            "room": sala_atual
+                        })
+                        
+                    def ban_ctx():
+                        if messagebox.askyesno("Banir Usuário", f"Deseja realmente banir {target_user} desta sala?", parent=janela):
+                            enviar_json(cliente_socket, {
+                                "type": "moderation_action",
+                                "action": "ban",
+                                "username": target_user,
+                                "room": sala_atual
+                            })
+                            
+                    menu_contexto.add_command(label="👞 Expulsar da Sala (Kick)", command=kick_ctx)
+                    menu_contexto.add_command(label="🚫 Banir da Sala", command=ban_ctx)
+                    
+                menu_contexto.post(event.x_root, event.y_root)
             except:
                 pass
 
         listbox_usuarios.bind("<Button-3>", show_menu_usuarios)
-        
-        # Convites
-        lbl_convites = tk.Label(sidebar, text="Convites Recebidos", font=("Arial", 9, "bold"), bg="#f0f0f0")
-        lbl_convites.pack(anchor="w", pady=(10, 2))
-        
-        frame_list_convites = tk.Frame(sidebar)
-        frame_list_convites.pack(fill=tk.BOTH, expand=True)
-        
-        listbox_convites = tk.Listbox(frame_list_convites, height=3, width=22, font=("Arial", 9))
-        listbox_convites.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scroll_convites = ttk.Scrollbar(frame_list_convites, orient="vertical", command=listbox_convites.yview)
-        scroll_convites.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox_convites.config(yscrollcommand=scroll_convites.set)
-        
-        def double_click_convite(event):
-            selection = listbox_convites.curselection()
-            if selection:
-                rem = listbox_convites.get(selection[0])
-                resposta = messagebox.askyesno("Solicitação de Amizade", f"Deseja aceitar a solicitação de amizade de '{rem}'?")
-                try:
-                    enviar_json(cliente_socket, {
-                        "type": "friend_response",
-                        "from": rem,
-                        "accept": resposta
-                    })
-                    listbox_convites.delete(selection[0])
-                except:
-                    pass
-        listbox_convites.bind("<Double-Button-1>", double_click_convite)
         
         # Amigos
         lbl_amigos = tk.Label(sidebar, text="Amigos (Duplo clique DM)", font=("Arial", 9, "bold"), bg="#f0f0f0")
@@ -2449,8 +2476,66 @@ def iniciar_modo_gui(janela):
                 if messagebox.askyesno("Remover Amigo", f"Deseja remover {target} dos amigos?"):
                     enviar_json(cliente_socket, {"type": "friend_action", "action": "remove", "username": target})
                     
+        def exibir_modal_convites():
+            nonlocal lista_convites_pendentes, btn_ver_convites
+            modal = tk.Toplevel(janela)
+            modal.title("Convites")
+            modal.resizable(False, False)
+            modal.transient(janela)
+            modal.grab_set()
+            
+            modal.geometry("300x250")
+            centralizar_janela(modal, janela)
+            
+            tk.Label(modal, text="Solicitações de Amizade Recebidas", font=("Arial", 10, "bold")).pack(pady=10)
+            
+            frame_modal = tk.Frame(modal, padx=10, pady=5)
+            frame_modal.pack(fill=tk.BOTH, expand=True)
+            
+            listbox_modal = tk.Listbox(frame_modal, height=6, font=("Arial", 9))
+            listbox_modal.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            scroll_modal = ttk.Scrollbar(frame_modal, orient="vertical", command=listbox_modal.yview)
+            scroll_modal.pack(side=tk.RIGHT, fill=tk.Y)
+            listbox_modal.config(yscrollcommand=scroll_modal.set)
+            
+            def preencher_modal():
+                listbox_modal.delete(0, tk.END)
+                for item in lista_convites_pendentes:
+                    listbox_modal.insert(tk.END, item)
+            
+            preencher_modal()
+            
+            def tratar_resposta(aceitar):
+                sel = listbox_modal.curselection()
+                if not sel:
+                    messagebox.showwarning("Aviso", "Selecione um convite da lista!", parent=modal)
+                    return
+                rem = listbox_modal.get(sel[0])
+                try:
+                    enviar_json(cliente_socket, {
+                        "type": "friend_response",
+                        "from": rem,
+                        "accept": aceitar
+                    })
+                    if rem in lista_convites_pendentes:
+                        lista_convites_pendentes.remove(rem)
+                    preencher_modal()
+                    if btn_ver_convites:
+                        btn_ver_convites.config(text=f"📩 Convites ({len(lista_convites_pendentes)})")
+                except:
+                    pass
+            
+            btn_modal_frame = tk.Frame(modal, pady=10)
+            btn_modal_frame.pack(fill=tk.X)
+            
+            ttk.Button(btn_modal_frame, text="Aceitar", command=lambda: tratar_resposta(True)).pack(side=tk.LEFT, padx=10, expand=True, fill=tk.X)
+            ttk.Button(btn_modal_frame, text="Recusar", command=lambda: tratar_resposta(False)).pack(side=tk.RIGHT, padx=10, expand=True, fill=tk.X)
+
         ttk.Button(btn_friend_frame, text="+ Amigo", command=btn_add_amigo, width=8).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_friend_frame, text="- Amigo", command=btn_rem_amigo, width=8).pack(side=tk.LEFT, padx=2)
+        btn_ver_convites = ttk.Button(btn_friend_frame, text=f"📩 Convites ({len(lista_convites_pendentes)})", command=exibir_modal_convites, width=12)
+        btn_ver_convites.pack(side=tk.LEFT, padx=2)
 
         # Inicia aba padrão #geral
         criar_aba("#geral")

@@ -167,7 +167,7 @@ def autenticar_usuario(cliente_buffer):
                     "role": user_role
                 })
                 conn.close()
-                return nome
+                continue
             except sqlite3.IntegrityError:
                 enviar_json(cliente_buffer.sock, {
                     "type": "auth_response",
@@ -256,8 +256,11 @@ def empurrar_estado_inicial(cliente_socket, nome_usuario):
     conn = obter_conexao()
     c = conn.cursor()
     c.execute("SELECT sala, dono, senha FROM salas_config")
+    dono_sala_padrao = "admin"
     for row in c.fetchall():
         s, dono, senha = row[0], row[1], row[2]
+        if s == "#geral":
+            dono_sala_padrao = dono
         if s not in salas_ativas:
             salas_ativas[s] = 0
         if senha:
@@ -270,10 +273,16 @@ def empurrar_estado_inicial(cliente_socket, nome_usuario):
     with clientes_lock:
         for info in clientes_conectados.values():
             if "#geral" in info['salas']:
+                badge_val = ""
+                if info.get('role') == 'admin':
+                    badge_val = "⭐ Admin"
+                elif info['nome'] == dono_sala_padrao:
+                    badge_val = "👑 Dono"
                 usuarios_na_sala.append({
                     "name": info['nome'],
                     "color": info['cor'],
-                    "status": info['status']
+                    "status": info['status'],
+                    "badge": badge_val
                 })
                 
     # 3. Lista de amigos
@@ -535,13 +544,29 @@ def gerenciar_cliente(cliente_socket, endereco):
     })
     
     # Notifica os outros membros do #geral sobre a entrada
+    dono_sala_padrao = "admin"
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("SELECT dono FROM salas_config WHERE sala = '#geral'")
+    row_d = c.fetchone()
+    if row_d:
+        dono_sala_padrao = row_d[0]
+    conn.close()
+
+    badge_val = ""
+    if role == 'admin':
+        badge_val = "⭐ Admin"
+    elif nome == dono_sala_padrao:
+        badge_val = "👑 Dono"
+
     broadcast_incremental({
         "type": "user_joined",
         "room": sala_inicial,
         "user": {
             "name": nome,
             "color": cor,
-            "status": status
+            "status": status,
+            "badge": badge_val
         }
     }, sala_alvo=sala_inicial, exceto_socket=cliente_socket)
 
@@ -670,13 +695,30 @@ def gerenciar_cliente(cliente_socket, endereco):
 
                 if not ja_inscrito:
                     # Notifica os outros membros sobre a entrada
+                    dono_sala = "admin"
+                    if not is_dm:
+                        conn = obter_conexao()
+                        c = conn.cursor()
+                        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (nova_sala,))
+                        row_d = c.fetchone()
+                        if row_d:
+                            dono_sala = row_d[0]
+                        conn.close()
+                    
+                    badge_val = ""
+                    if role == 'admin':
+                        badge_val = "⭐ Admin"
+                    elif nome == dono_sala:
+                        badge_val = "👑 Dono"
+
                     broadcast_incremental({
                         "type": "user_joined",
                         "room": nova_sala,
                         "user": {
                             "name": nome,
                             "color": cor,
-                            "status": status
+                            "status": status,
+                            "badge": badge_val
                         }
                     }, sala_alvo=nova_sala, exceto_socket=cliente_socket)
                     
@@ -722,17 +764,27 @@ def gerenciar_cliente(cliente_socket, endereco):
                         dono_sala = row_d[0]
                     conn.close()
                     
+                usuarios_sala_lista = []
+                with clientes_lock:
+                    for c_info in clientes_conectados.values():
+                        if nova_sala in c_info['salas']:
+                            badge_val = ""
+                            if c_info.get('role') == 'admin':
+                                badge_val = "⭐ Admin"
+                            elif c_info['nome'] == dono_sala:
+                                badge_val = "👑 Dono"
+                            usuarios_sala_lista.append({
+                                "name": c_info['nome'],
+                                "color": c_info['cor'],
+                                "status": c_info['status'],
+                                "badge": badge_val
+                            })
+
                 enviar_json(cliente_socket, {
                     "type": "state_update_room",
                     "room": nova_sala,
                     "room_owner": dono_sala,
-                    "users": [
-                        {
-                            "name": c_info['nome'],
-                            "color": c_info['cor'],
-                            "status": c_info['status']
-                        } for c_info in clientes_conectados.values() if nova_sala in c_info['salas']
-                    ]
+                    "users": usuarios_sala_lista
                 })
 
             elif tipo == "leave":
@@ -1471,6 +1523,9 @@ def gerenciar_cliente(cliente_socket, endereco):
                     "is_system": True,
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
+                
+            elif tipo == "request_state":
+                empurrar_estado_inicial(cliente_socket, nome)
                 
             elif tipo == "msg":
                 texto = sanitizar_string(dados.get("content", ""))
