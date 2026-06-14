@@ -13,10 +13,10 @@ class TestConnection(sqlite3.Connection):
     def close(self):
         pass
 
-class TestDatabase(unittest.TestCase):
+class TestDatabase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Configura banco em memória para testes isolados usando nossa factory personalizada
-        self.conn = sqlite3.connect(":memory:", factory=TestConnection)
+        self.conn = sqlite3.connect(":memory:", factory=TestConnection, check_same_thread=False)
         # Mock obter_conexao para retornar nossa conexão em memória
         self.patcher = patch("servidor.obter_conexao", return_value=self.conn)
         self.patcher.start()
@@ -46,13 +46,13 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(pwd_hash, pwd_hash_2)
         self.assertEqual(salt, salt_2)
 
-    def test_salvar_e_buscar_historico(self):
+    async def test_salvar_e_buscar_historico(self):
         # Insere dados
-        servidor.salvar_mensagem("#geral", "alice", "Olá mundo!")
-        servidor.salvar_mensagem("#geral", "bob", "Tudo bem?")
+        await servidor.salvar_mensagem("#geral", "alice", "Olá mundo!")
+        await servidor.salvar_mensagem("#geral", "bob", "Tudo bem?")
         
         # Busca
-        msgs = servidor.buscar_historico("#geral")
+        msgs = await servidor.buscar_historico("#geral")
         self.assertEqual(len(msgs), 2)
         # Cada tupla tem (data, remetente, mensagem, cor, role)
         self.assertEqual(msgs[0][1], "alice")

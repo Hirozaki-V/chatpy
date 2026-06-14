@@ -17,3 +17,8 @@ config_local.json
 # Logs
 logs/
 *.log
+
+# Ambientes virtuais
+venv/
+.venv/
+

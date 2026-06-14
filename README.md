@@ -1,50 +1,35 @@
 # ChatPy 💬🐍
 
-O **ChatPy** é um sistema de chat de arquitetura Cliente-Servidor robusto, seguro e leve, desenvolvido em Python. Ele combina a simplicidade do framework gráfico `tkinter` (utilizando o tema nativo `clam`) com mecanismos modernos de comunicação segura via SSL/TLS, banco de dados relacional concorrente (SQLite em modo WAL) e interface otimizada por eventos.
+O **ChatPy** é um sistema de bate-papo moderno, assíncrono e multiplataforma desenvolvido em Python. Ele combina a robustez e a escalabilidade de conexões **WebSockets assíncronas** (`asyncio` + `websockets`) com uma interface gráfica super leve baseada em **PyWebView** (HTML/CSS/JS locais) que emula com fidelidade o design clássico do **mIRC** e **Windows 98** dos anos 2000, além de oferecer um cliente de terminal (**CLI**) alternativo de ultra-baixo consumo de recursos.
 
-Este projeto foi refatorado para transformar um protótipo básico em uma aplicação de nível de produção adequada para implantação (como em um servidor doméstico Raspberry Pi), mantendo o consumo de recursos extremamente baixo.
+Adequado para ser hospedado offline em redes locais ou dispositivos embarcados limitados (como o Raspberry Pi), o ChatPy funciona 100% sem dependências de rede externa ou conexões com a nuvem.
 
 ---
 
 ## 🚀 Funcionalidades Principais
 
-### 🔒 1. Segurança e Criptografia Real (SSL/TLS)
-* **Transporte Seguro Obrigatório**: Toda a comunicação trafega sobre sockets criptografados com SSL/TLS. Não há fallback para texto plano (segurança absoluta contra interceptações de tráfego/Sniffing).
-* **Autocomprovação e Geração de Certificados**: Na ausência dos arquivos `server.crt` e `server.key`, o próprio servidor gera dinamicamente chaves criptográficas autoassinadas RSA robustas utilizando a biblioteca `cryptography`.
-* **Validação Rígida no Cliente**: O cliente exige que o certificado do servidor (`server.crt`) esteja no mesmo diretório para validar a autenticidade da conexão. Se removido intencionalmente pelo usuário, o cliente opera em modo de criptografia sem validação de host (útil para testes rápidos).
+### 📡 1. Rede Baseada em WebSockets Assíncronos
+* **Modelo Não Bloqueante (`asyncio`)**: O servidor e o cliente rodam sobre loops de eventos assíncronos de thread única, dispensando o modelo ineficiente de "uma thread por cliente".
+* **Conectividade Segura**: Comunicação cifrada sob TLS/SSL nativo com geração automatizada de certificados locais autoassinados no servidor (`server.crt` e `server.key`).
+* **Conexão e Reconexão Resiliente**: O motor central `ChatEngine` cuida de reconectar automaticamente o cliente caso a rede sofra oscilações.
 
-### ⚡ 2. Backend SQLite de Alta Performance
-* **Modo WAL (Write-Ahead Logging)**: Configurado nativamente (`PRAGMA journal_mode=WAL` e `PRAGMA synchronous=NORMAL`) para permitir leituras simultâneas sem bloquear gravações no banco de dados.
-* **Isolamento de Conexões por Thread**: O servidor gerencia o banco criando conexões independentes por thread concorrente, evitando conflitos de acesso.
-* **Sem Trava Global (`db_lock`)**: O locking global foi removido, sendo substituído por um timeout de lock de banco estendido para 15 segundos para máxima concorrência.
+### 🎨 2. Interface Gráfica Retrô Clássica (mIRC & Windows 98)
+* **Visual dos Anos 2000**: Front-end minimalista com cantos perfeitamente quadrados (`border-radius: 0`), esquema de cinza corporativo clássico, bordas 3D chanfradas em relevo e tipografia pixelada.
+* **Emojis Coloridos Nativos**: Exibição e renderização nativas e leves de emojis no chat através de fontes do sistema (`Segoe UI Emoji`, `Apple Color Emoji`, sans-serif), sem a necessidade de processamento gráfico pesado.
+* **Ponte Python-JS Segura (Bridge)**: A lógica do front-end comunica-se com a API do PyWebView (`window.pywebview.api`) de maneira totalmente assíncrona e segura entre threads.
 
-### 👥 3. Salas Múltiplas e Concorrentes
-* **Inscrição Não-Excludente**: Os usuários podem entrar e estar presentes em várias salas (canais) simultaneamente.
-* **Isolamento de Logs e DMs**: O cliente salva os logs de mensagens de forma isolada (ex: `logs/#geral.log` para canais ou `logs/dm_usuarioA_usuarioB.log` para mensagens diretas). O isolamento baseia-se unicamente no cabeçalho do pacote recebido da rede, garantindo que mesmo recebendo mensagens simultâneas em segundo plano, os logs não se misturem.
+### 💻 3. Cliente de Terminal CLI Alternativo
+* **Super-Leveza**: Um cliente executado diretamente no terminal/prompt de comando (`cliente_cli.py`), ideal para uso via SSH ou em computadores extremamente antigos.
+* **Mesmo Motor Central**: Compartilha a mesma classe `ChatEngine` que o cliente gráfico, garantindo consistência nas regras de negócio e de comunicação.
 
-### 🌐 4. Otimização de Rede por Eventos (Deltas)
-* **Protocolo Baseado em JSON**: Toda a troca de dados acontece por meio de pacotes JSON delimitados e sanitizados contra quebras de linha (`\n` e `\r`).
-* **Estado Incremental (Deltas)**: Em vez de requisitar e transmitir o estado inteiro do servidor a cada segundo, o servidor envia apenas atualizações pontuais e atômicas quando um evento ocorre (ex: novos usuários entram, mudam de status ou salas são criadas). Isso poupa largura de banda e ciclos de CPU tanto do servidor quanto do cliente.
+### 👥 4. Salas Múltiplas, DMs e Amizades
+* **Salas Privadas e Senhas**: Suporte para criação e entrada em salas com senha. Canais protegidos exibem um indicador visual no painel.
+* **Logs Locais Individuais**: Gravação automática do histórico de mensagens em arquivos `.log` separados por sala ou DMs na pasta local `logs/`.
+* **Sistema de Moderação**: Expulse (`/kick`), bana (`/ban`) ou desbana (`/unban`) usuários das suas salas criadas.
 
-### 🎨 5. Interface Gráfica Inteligente e Responsiva
-* **Layout Fluido e Responsivo**: O empacotamento (`.pack()`) garante que a barra inferior de digitação (`bottom_bar`), a barra superior e a barra lateral direita (`sidebar`) nunca sejam engolidas ou sumam ao redimensionar a janela para dimensões mínimas.
-* **Centralização Inteligente (Multi-Monitores)**: Todas as janelas secundárias/diálogos (`Toplevel`) abrem perfeitamente centralizadas em relação à janela principal no monitor ativo em que ela está renderizada.
-* **Timestamps Unificados**: Todas as mensagens (histórico e mensagens ao vivo) exibem um timestamp unificado no formato `[YYYY-MM-DD HH:MM:SS]` na interface gráfica. O histórico carrega perfeitamente integrado, eliminando linhas e divisórias visuais de cabeçalho.
-* **Painel de Moderação em Destaque**: Moderadores e Administradores têm acesso a uma seção de ferramentas administrativas em vermelho destacado, habilitada dinamicamente dependendo do canal (DM vs Sala) e das permissões do usuário.
-* **Markdown Básico Integrado**: Renderiza textos no chat utilizando formatação em tempo de execução:
-  * `**negrito**` -> Texto em negrito.
-  * `*itálico*` -> Texto em itálico.
-  * `` `código` `` -> Texto estilizado com fonte monoespaçada e fundo contrastante.
-* **Filtro e Busca no Histórico**: Diálogo gráfico (`Toplevel`) que permite buscar mensagens passadas no banco de dados. A busca é segura: o servidor garante que você só consiga buscar mensagens de salas públicas ou mensagens diretas (DMs) onde você mesmo seja um dos participantes.
-* **Status Automático de Ociosidade**: O cliente monitora a atividade do mouse e do teclado globalmente na janela do chat. Após 5 minutos sem interação, o status do usuário muda automaticamente para "Ausente" no servidor. Qualquer nova interação restaura o status para "Online".
-* **Controles de Notificação (Sons e Nudge)**: Configurações de som de novas mensagens e de "Nudge" (chamar atenção balançando a janela do cliente) podem ser habilitadas/desabilitadas em um menu de configurações, sendo persistidas localmente no arquivo `config_local.json`.
-* **Visualização de Imagens no Chat**: Se o usuário enviar um arquivo de imagem (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), o chat exibirá uma miniatura estilizada de até 120x120px no corpo da conversa. A aplicação usa a biblioteca `Pillow` se disponível (e provê fallback nativo via Tkinter `PhotoImage` para formatos PNG/GIF caso não esteja instalada).
-* **Drag & Drop de Arquivos**: O cliente suporta arrastar e soltar arquivos de imagem/texto diretamente na área de conversa para envio rápido (utilizando a biblioteca `tkinterdnd2`, com fallback seguro se o sistema não possuir suporte).
-* **Criação de Salas Unificada e Privacidade**: Interface simples e direta para criar canais protegidos por senha. Canais privados são indicados visualmente por um ícone de cadeado (`🔒`) na lista de salas. O histórico de logs local de canais protegidos permanece completamente oculto e inacessível até que a senha seja validada com sucesso pelo servidor.
-* **Emojis Coloridos Reais**: Utilização da fonte `Segoe UI` na renderização das mensagens para permitir o suporte a emojis nativos e coloridos do Windows. Inclui também uma paleta flutuante do botão "😊" do rodapé disposta em uma moderna grade de 4 colunas com 32 emojis coloridos selecionáveis.
-* **Atualização Periódica Automática**: O Explorador de Salas se atualiza sozinho periodicamente a cada 15 segundos em segundo plano para exibir canais criados recentemente sem a necessidade de intervenções manuais.
-* **Crachás de Cargo na Conversa**: Exibição visual de crachás de privilégio como `[👑 Dono]` e `[⭐ Admin]` ao lado do nome do remetente nas mensagens do chat ao vivo, histórico e compartilhamentos de arquivos.
-* **Confirmação de Saída**: O fechamento da aplicação através do botão "X" da janela exibe um diálogo de confirmação para prevenir a perda acidental da sessão de chat.
+### ⚡ 5. Otimizações de Banco de Dados
+* **SQLite Otimizado**: Escrita concorrente no SQLite utilizando modo WAL (`PRAGMA journal_mode=WAL` e `PRAGMA synchronous=NORMAL`).
+* **Operações Não Bloqueantes**: Todas as queries síncronas do banco de dados no servidor e escritas de arquivos no cliente rodam em executores paralelos (`asyncio.to_thread`) para nunca congelar as conexões WebSocket.
 
 ---
 
@@ -53,147 +38,93 @@ Este projeto foi refatorado para transformar um protótipo básico em uma aplica
 ```
 ChatPy/
 │
-├── cliente.py          # Interface gráfica e lógica do cliente Tkinter
-├── servidor.py         # Servidor multithread sockets com SSL/TLS e SQLite
-├── limpar_db.py        # Utilitário administrativo de limpeza e otimização do banco
-├── .gitignore          # Filtros para não versionar dados locais e credenciais
-├── README.md           # Este manual de documentação
+├── chat_engine.py       # Motor lógico central assíncrono do cliente
+├── cliente_gui.py       # Inicializador da GUI nativa leve com PyWebView
+├── cliente_cli.py       # Interface interativa de terminal (CLI fallback)
+├── servidor.py          # Servidor WebSocket assíncrono (websockets + sqlite3)
+├── requirements.txt     # Arquivo com as dependências do ecossistema
+├── README.md            # Este guia de documentação
 │
-# Gerados localmente (NÃO comitados):
-├── chat.db             # Banco de dados SQLite de mensagens e estados
-├── server.key          # Chave privada SSL/TLS do servidor
-├── server.crt          # Certificado SSL público para autenticação
-├── config_local.json   # Configurações de preferências do cliente
-└── logs/               # Registros locais de histórico do cliente (.log)
+├── web/                 # Pasta contendo os recursos locais do front-end
+│   ├── index.html       # Estrutura HTML do visual mIRC / Windows 98
+│   ├── style.css        # Estilos clássicos de 3D chanfrado retrô
+│   └── script.js        # Lógica JS e chamadas da ponte pywebview
+│
+├── tests/               # Testes unitários de banco e lógica
+│   └── test_database.py
+│
+# Arquivos gerados localmente (NÃO comitados):
+├── chat.db              # Banco de dados SQLite de mensagens e estados
+├── server.key           # Chave privada TLS/SSL gerada pelo servidor
+├── server.crt           # Certificado público TLS/SSL autoassinado
+└── logs/                # Histórico de conversas locais em formato de texto (.log)
 ```
 
 ---
 
 ## 🛠️ Requisitos e Configuração
 
-### 1. Requisitos do Sistema
-* Python 3.8 ou superior instalado.
-* Acesso à internet ou rede local estável.
-
-### 2. Dependências
-As dependências do projeto são mínimas. O núcleo funciona apenas com a biblioteca padrão do Python, exceto pela criptografia SSL dinâmica:
-
-#### Dependências Obrigatórias no Servidor:
-* `cryptography` (Usado para gerar o certificado SSL autoassinado de forma automática).
-
-No Windows/macOS:
+### 1. Instalação de Dependências
+Instale as bibliotecas necessárias declaradas em `requirements.txt`:
 ```bash
-pip install cryptography
-```
-No Raspberry Pi / Linux Debian (PEP 668):
-```bash
-sudo apt install python3-cryptography -y
+pip install -r requirements.txt
 ```
 
-#### Dependências Opcionais no Cliente (Melhoria de UI/UX):
-* `Pillow` (Exibição de miniaturas de imagem no chat):
-  ```bash
-  pip install Pillow
-  # No Linux: sudo apt install python3-pil python3-pil.imagetk -y
-  ```
-* `tkinterdnd2` (Drag and Drop de arquivos):
-  ```bash
-  pip install tkinterdnd2
-  ```
+*(Nota: O PyWebView utiliza o renderizador nativo do sistema operacional - ex: WebView2 no Windows, WebKit no macOS/Linux Debian - sendo extremamente leve e dispensando o empacotamento do Chromium).*
 
 ---
 
 ## 🚀 Como Executar
 
 ### Passo 1: Inicializando o Servidor
-Execute o servidor na sua máquina ou em um dispositivo da rede local (ex: Raspberry Pi):
+Execute o servidor no console:
 ```bash
 python servidor.py
 ```
-* O servidor gerará o arquivo `server.key` e `server.crt` na primeira inicialização se eles não existirem.
-* Ele começará a escutar conexões seguras na porta padrão `5000`.
+* O servidor gerará as chaves criptográficas SSL/TLS (`server.crt` e `server.key`) na primeira inicialização se elas não existirem.
+* Ele começará a escutar conexões de maneira segura na porta padrão `5000`.
 
-### Passo 2: Configurando o Cliente
-1. Certifique-se de copiar o arquivo `server.crt` gerado pelo servidor para a mesma pasta do script `cliente.py` na máquina cliente (isso garante a autenticação SSL segura).
-2. Inicie o cliente:
+### Passo 2: Executando o Cliente Gráfico (GUI)
+Certifique-se de que o certificado `server.crt` gerado está no mesmo diretório do cliente para autenticação de rede, e inicie:
 ```bash
-python cliente.py
+python cliente_gui.py
 ```
-3. Digite o endereço IP do seu servidor (ex: `127.0.0.1` para testes locais, ou o IP privado da sua rede local) e faça login ou crie uma conta.
+* A janela retrô será iniciada e tentará se conectar ao IP especificado em `config_local.json` (ou localhost por padrão).
+
+### Passo 3: Executando o Cliente Terminal (CLI)
+Caso queira rodar diretamente no terminal sem interface gráfica:
+```bash
+python cliente_cli.py
+```
+Insira o IP/Porta no prompt e digite suas credenciais para entrar no chat de texto.
 
 ---
 
-## 🧹 Script de Limpeza Administrativa (`limpar_db.py`)
-
-Caso precise resetar o servidor para iniciar um histórico limpo e otimizar o espaço em disco ocupado, o script administrativo `limpar_db.py` está disponível. Para usá-lo:
-
-1. Pare o processo do servidor (`servidor.py`).
-2. Execute o script:
-   ```bash
-   python limpar_db.py
-   ```
-3. O script irá:
-   * Limpar todo o histórico de mensagens e anexos.
-   * Apagar salas customizadas (preservando o canal principal `#geral`).
-   * Remover contas de usuários comuns (mantendo os administradores).
-   * Limpar listas de amizade e banimentos.
-   * Executar o comando `VACUUM` no SQLite, reorganizando fisicamente o banco e reduzindo o tamanho do arquivo `chat.db` em disco ao mínimo absoluto.
-4. Reinicie o servidor.
-
----
-
-## 📡 Detalhes do Protocolo JSON (Payloads)
-
-O protocolo de sockets do **ChatPy** trafega objetos JSON terminados em quebra de linha. Abaixo, alguns exemplos de payload:
+## 📡 Protocolo de Payloads JSON (Exemplos)
 
 ### Login de Usuário (Cliente -> Servidor)
 ```json
 {
-  "action": "login",
+  "type": "login",
   "username": "usuario1",
-  "password": "senha_criptografada_ou_plain"
+  "password": "hash_da_senha"
 }
 ```
 
-### Transmissão de Mensagem (Cliente -> Servidor)
+### Mensagem em Sala (Cliente -> Servidor)
 ```json
 {
-  "action": "send_msg",
+  "type": "msg",
   "room": "#geral",
-  "msg": "Olá **mundo**! `print('Hello')`"
+  "content": "Olá mundo! 🚀"
 }
 ```
 
-### Envio de Mensagem Direta (DM)
+### Mensagem Privada DM (Cliente -> Servidor)
 ```json
 {
-  "action": "send_dm",
-  "to_user": "usuario2",
-  "msg": "Esta é uma conversa secreta!"
+  "type": "private_msg",
+  "to": "usuario2",
+  "content": "Conversa privada direta!"
 }
 ```
-
-### Evento Incremental do Servidor (Servidor -> Clientes)
-```json
-{
-  "event": "user_status_changed",
-  "username": "usuario1",
-  "status": "Ausente"
-}
-```
-
----
-
-## 🗄️ Estrutura do Banco de Dados SQLite
-
-O banco `chat.db` é composto pelas seguintes tabelas principais:
-1. `usuarios`: Cadastro de usuários, hash de senhas, permissões (admin ou comum) e data de criação.
-2. `salas`: Cadastro de salas públicas e privadas (com hash de senha).
-3. `mensagens`: Registro de todas as mensagens com carimbo de data/hora (timestamp), remetente, destino (sala ou usuário em caso de DM) e tipo de payload.
-4. `amigos`: Controle de convites e conexões diretas aceitas.
-5. `banimentos`: Registros de usuários banidos das salas ou do servidor.
-
----
-
-## ⚖️ Licença
-Este projeto é fornecido "como está" para fins de aprendizado e uso privado. Sinta-se livre para clonar, modificar e expandir conforme suas necessidades!

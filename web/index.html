@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=device-width, initial-scale=1.0">
+    <title>ChatPy - mIRC Retro</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Janela de Login / Registro -->
+<div id="login-modal" class="modal-overlay">
+    <div class="window" style="width: 320px;">
+        <div class="title-bar">
+            <div class="title-bar-text">ChatPy - Conectar</div>
+            <div class="title-bar-controls">
+                <button aria-label="Minimize" disabled></button>
+                <button aria-label="Maximize" disabled></button>
+                <button aria-label="Close" onclick="fecharApp()"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <div style="text-align: center; margin-bottom: 15px;">
+                <h2 style="margin: 0; font-family: monospace; letter-spacing: 2px; color: #000080;">ChatPy v2.0</h2>
+                <small style="color: #555;">Cliente WebSockets Retrô</small>
+            </div>
+            
+            <div class="field-row-stacked" style="margin-bottom: 10px;">
+                <label for="login-username">Nome de Usuário:</label>
+                <input id="login-username" type="text" placeholder="Apelido..." autofocus />
+            </div>
+            <div class="field-row-stacked" style="margin-bottom: 15px;">
+                <label for="login-password">Senha:</label>
+                <input id="login-password" type="password" placeholder="Senha..." />
+            </div>
+
+            <div id="login-status" class="status-msg" style="min-height: 18px; margin-bottom: 10px; color: #a00; font-size: 11px;"></div>
+
+            <div class="field-row" style="justify-content: flex-end; gap: 8px;">
+                <button id="btn-login" class="default-btn" onclick="fazerLogin()">Entrar</button>
+                <button id="btn-register" onclick="fazerRegistro()">Registrar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Janela Principal do Chat (mIRC Style) -->
+<div id="main-app" class="window main-window" style="display: none;">
+    <div class="title-bar">
+        <div class="title-bar-text" id="app-title">ChatPy - mIRC [conectando...]</div>
+        <div class="title-bar-controls">
+            <button aria-label="Minimize" onclick="minimizarJanela()"></button>
+            <button aria-label="Maximize" onclick="maximizarJanela()"></button>
+            <button aria-label="Close" onclick="fecharApp()"></button>
+        </div>
+    </div>
+    
+    <!-- Barra de Menus Clássica -->
+    <ul class="menu-bar">
+        <li role="menuitem">Arquivo
+            <ul class="menu-dropdown">
+                <li onclick="desconectarEVoltar()">Desconectar</li>
+                <li onclick="fecharApp()">Sair</li>
+            </ul>
+        </li>
+        <li role="menuitem">Salas
+            <ul class="menu-dropdown">
+                <li onclick="abrirCriarSala()">Criar Nova Sala...</li>
+                <li onclick="abrirExplorarSalas()">Explorar Salas...</li>
+            </ul>
+        </li>
+        <li role="menuitem">Amigos
+            <ul class="menu-dropdown">
+                <li onclick="abrirGerenciarAmigos()">Gerenciar Amigos...</li>
+            </ul>
+        </li>
+        <li role="menuitem" onclick="mostrarAjuda()">Ajuda</li>
+    </ul>
+
+    <div class="window-body app-container">
+        <!-- Layout Principal de 3 Colunas -->
+        <div class="workspace">
+            
+            <!-- Coluna Esquerda: Salas e DMs (Abas) -->
+            <div class="panel sidebar-left">
+                <div class="panel-header">Abas Ativas</div>
+                <div class="panel-content scrollable">
+                    <ul id="tabs-list" class="tree-view">
+                        <!-- Gerado Dinamicamente -->
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Coluna Central: Janela do Chat -->
+            <div class="panel chat-area">
+                <div class="panel-header" id="active-tab-title">#geral</div>
+                <div class="panel-content chat-messages scrollable" id="chat-box">
+                    <!-- Mensagens do chat -->
+                </div>
+                
+                <!-- Input de Mensagem -->
+                <div class="chat-input-row">
+                    <input type="text" id="chat-input" placeholder="Digite uma mensagem ou comando..." onkeydown="detectarEnter(event)" oninput="registrarDigitando()" />
+                    <button id="btn-send" onclick="enviarMensagemAtual()">Enviar</button>
+                </div>
+            </div>
+
+            <!-- Coluna Direita: Usuários / Amigos -->
+            <div class="panel sidebar-right">
+                <div class="panel-header">Usuários na Sala</div>
+                <div class="panel-content scrollable users-panel">
+                    <ul id="users-list" class="tree-view">
+                        <!-- Usuários da sala atual -->
+                    </ul>
+                </div>
+                
+                <div class="panel-header" style="border-top: 2px solid #dfdfdf;">Amigos Online</div>
+                <div class="panel-content scrollable friends-panel">
+                    <ul id="friends-list" class="tree-view">
+                        <!-- Lista de amigos -->
+                    </ul>
+                </div>
+
+                <div id="friend-requests-box" class="requests-panel" style="display: none; padding: 4px; border-top: 2px solid #dfdfdf;">
+                    <div style="font-weight: bold; margin-bottom: 2px;">Convites:</div>
+                    <ul id="requests-list" style="list-style: none; padding: 0; margin: 0;">
+                        <!-- Convites pendentes -->
+                    </ul>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Rodapé do Aplicativo (Status bar) -->
+        <div class="status-bar">
+            <p class="status-bar-field" id="status-user">Usuário: -</p>
+            <p class="status-bar-field" id="status-room">Sala: #geral</p>
+            <p class="status-bar-field" id="status-typing" style="flex: 2;"></p>
+            
+            <!-- Seletor de Status Retrô -->
+            <div class="status-bar-field status-selectors">
+                <label for="status-select">Status:</label>
+                <select id="status-select" onchange="alterarStatus(this.value)">
+                    <option value="Online">Online</option>
+                    <option value="Ausente">Ausente</option>
+                    <option value="Ocupado">Ocupado</option>
+                </select>
+            </div>
+
+            <!-- Seletor de Cor Retrô -->
+            <div class="status-bar-field color-selectors">
+                <label for="color-select">Cor:</label>
+                <input type="color" id="color-select" value="#000000" onchange="alterarCor(this.value)" style="padding: 0; width: 35px; height: 18px; border: none; cursor: pointer;" />
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Dialog: Criar Sala -->
+<div id="dialog-create-room" class="modal-overlay dialog-overlay" style="display: none;">
+    <div class="window" style="width: 250px;">
+        <div class="title-bar">
+            <div class="title-bar-text">Criar Sala</div>
+            <div class="title-bar-controls">
+                <button aria-label="Close" onclick="fecharDialog('dialog-create-room')"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <div class="field-row-stacked" style="margin-bottom: 8px;">
+                <label for="new-room-name">Nome da Sala (com #):</label>
+                <input id="new-room-name" type="text" value="#" />
+            </div>
+            <div class="field-row-stacked" style="margin-bottom: 12px;">
+                <label for="new-room-pass">Senha (Opcional):</label>
+                <input id="new-room-pass" type="password" placeholder="Sem senha" />
+            </div>
+            <div class="field-row" style="justify-content: flex-end; gap: 6px;">
+                <button onclick="confirmarCriarSala()">Criar</button>
+                <button onclick="fecharDialog('dialog-create-room')">Cancelar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Dialog: Explorar Salas -->
+<div id="dialog-explore-rooms" class="modal-overlay dialog-overlay" style="display: none;">
+    <div class="window" style="width: 350px;">
+        <div class="title-bar">
+            <div class="title-bar-text">Explorar Salas</div>
+            <div class="title-bar-controls">
+                <button aria-label="Close" onclick="fecharDialog('dialog-explore-rooms')"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <p style="margin: 0 0 8px 0;">Salas ativas no servidor:</p>
+            <div class="rooms-container" style="border: 2px solid #808080; background: #fff; height: 180px; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 12px;">
+                    <thead>
+                        <tr style="background: #c0c0c0; border-bottom: 1px solid #808080; position: sticky; top: 0;">
+                            <th style="padding: 4px;">Sala</th>
+                            <th style="padding: 4px;">Usuários</th>
+                            <th style="padding: 4px;">Protegida</th>
+                            <th style="padding: 4px;">Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody id="explore-rooms-list">
+                        <!-- Gerado dinamicamente -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="field-row" style="justify-content: space-between; margin-top: 10px;">
+                <button onclick="atualizarExplorarSalas()">Atualizar</button>
+                <button onclick="fecharDialog('dialog-explore-rooms')">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Dialog: Senha da Sala -->
+<div id="dialog-room-password" class="modal-overlay dialog-overlay" style="display: none;">
+    <div class="window" style="width: 250px;">
+        <div class="title-bar">
+            <div class="title-bar-text">Senha Requerida</div>
+            <div class="title-bar-controls">
+                <button aria-label="Close" onclick="fecharDialog('dialog-room-password')"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <p id="password-room-prompt">Digite a senha para a sala:</p>
+            <div class="field-row-stacked" style="margin-bottom: 12px;">
+                <input id="room-pass-input" type="password" placeholder="Senha" autofocus />
+            </div>
+            <div class="field-row" style="justify-content: flex-end; gap: 6px;">
+                <button id="btn-password-submit">Entrar</button>
+                <button onclick="fecharDialog('dialog-room-password')">Cancelar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Dialog: Gerenciar Amigos -->
+<div id="dialog-friends" class="modal-overlay dialog-overlay" style="display: none;">
+    <div class="window" style="width: 300px;">
+        <div class="title-bar">
+            <div class="title-bar-text">Gerenciar Amigos</div>
+            <div class="title-bar-controls">
+                <button aria-label="Close" onclick="fecharDialog('dialog-friends')"></button>
+            </div>
+        </div>
+        <div class="window-body">
+            <div class="field-row-stacked" style="margin-bottom: 10px;">
+                <label for="friend-add-input">Adicionar Amigo (Nome):</label>
+                <div class="field-row">
+                    <input id="friend-add-input" type="text" style="flex: 1;" />
+                    <button onclick="enviarConviteAmigo()">Enviar</button>
+                </div>
+            </div>
+            <hr style="border: 1px inset #fff; margin: 12px 0;" />
+            <div style="font-weight: bold; margin-bottom: 4px;">Amigos Atuais:</div>
+            <div style="border: 2px solid #808080; background: #fff; height: 120px; overflow-y: auto;">
+                <ul id="friends-manage-list" style="list-style: none; padding: 0; margin: 0; font-size: 12px;">
+                    <!-- Gerado dinamicamente -->
+                </ul>
+            </div>
+            <div class="field-row" style="justify-content: flex-end; margin-top: 10px;">
+                <button onclick="fecharDialog('dialog-friends')">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,415 @@
+/* Configuração e Reset de Estilos Retrô */
+* {
+    box-sizing: border-box;
+    font-family: "MS Sans Serif", "Tahoma", "Courier New", monospace;
+    font-size: 12px;
+    image-rendering: pixelated;
+}
+
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #55aaaa; /* Verde-azulado clássico da área de trabalho do Win98 */
+    overflow: hidden;
+}
+
+/* Scrollbar Clássica do Windows 98 */
+::-webkit-scrollbar {
+    width: 16px;
+    height: 16px;
+}
+::-webkit-scrollbar-track {
+    background: #dfdfdf;
+    box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #808080;
+}
+::-webkit-scrollbar-thumb {
+    background: #c0c0c0;
+    border: 2px solid;
+    border-color: #fff #808080 #808080 #fff;
+}
+::-webkit-scrollbar-button {
+    background: #c0c0c0;
+    width: 16px;
+    height: 16px;
+    border: 2px solid;
+    border-color: #fff #808080 #808080 #fff;
+    display: block;
+}
+
+/* Modais de Overlay */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.dialog-overlay {
+    background: transparent;
+}
+
+/* A Janela Clássica do Windows 98 */
+.window {
+    background: #c0c0c0;
+    border: 2px solid;
+    border-color: #fff #808080 #808080 #fff;
+    box-shadow: 1px 1px 0 #000;
+    padding: 3px;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-window {
+    width: 100%;
+    height: 100%;
+}
+
+/* Barra de Título */
+.title-bar {
+    background: linear-gradient(90deg, #000080, #1084d0);
+    color: white;
+    padding: 3px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: bold;
+    user-select: none;
+}
+.title-bar-text {
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.title-bar-controls {
+    display: flex;
+    gap: 2px;
+}
+.title-bar-controls button {
+    width: 16px;
+    height: 14px;
+    min-width: 16px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid;
+    border-color: #fff #808080 #808080 #fff;
+    background: #c0c0c0;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: bold;
+    color: black;
+}
+.title-bar-controls button:active {
+    border-color: #808080 #fff #fff #808080;
+}
+.title-bar-controls button[disabled] {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Botões do Title Bar */
+button[aria-label="Close"]::after { content: "✕"; }
+button[aria-label="Minimize"]::after { content: "🗕"; }
+button[aria-label="Maximize"]::after { content: "🗖"; }
+
+/* Barra de Menus */
+.menu-bar {
+    list-style: none;
+    margin: 0;
+    padding: 2px 6px;
+    display: flex;
+    background: #c0c0c0;
+    border-bottom: 2px solid #808080;
+    gap: 12px;
+    user-select: none;
+    position: relative;
+    z-index: 100;
+}
+.menu-bar li {
+    padding: 2px 6px;
+    cursor: pointer;
+    position: relative;
+}
+.menu-bar li:hover {
+    background: #000080;
+    color: white;
+}
+.menu-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: #c0c0c0;
+    border: 2px solid;
+    border-color: #fff #808080 #808080 #fff;
+    list-style: none;
+    margin: 0;
+    padding: 2px;
+    min-width: 150px;
+    color: black;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+}
+.menu-dropdown li {
+    padding: 4px 12px;
+}
+.menu-dropdown li:hover {
+    background: #000080;
+    color: white;
+}
+.menu-bar li:hover .menu-dropdown {
+    display: block;
+}
+
+/* Corpo e Layout Interno */
+.window-body {
+    padding: 4px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.app-container {
+    padding: 4px 0 0 0;
+}
+
+/* Workspace Central */
+.workspace {
+    display: flex;
+    flex: 1;
+    gap: 4px;
+    overflow: hidden;
+}
+
+/* Painéis */
+.panel {
+    display: flex;
+    flex-direction: column;
+    border: 2px solid;
+    border-color: #808080 #fff #fff #808080; /* Baixado/Sunken */
+    background: #c0c0c0;
+    overflow: hidden;
+}
+.panel-header {
+    background: #000080;
+    color: white;
+    padding: 3px 6px;
+    font-weight: bold;
+    user-select: none;
+}
+.panel-content {
+    background: white;
+    flex: 1;
+    overflow-y: auto;
+}
+.scrollable {
+    overflow-y: auto;
+}
+
+/* Coluna Esquerda: Abas */
+.sidebar-left {
+    width: 140px;
+    min-width: 100px;
+}
+
+/* Coluna Central: Chat */
+.chat-area {
+    flex: 1;
+}
+.chat-messages {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "MS Sans Serif", sans-serif;
+}
+.chat-input-row {
+    background: #c0c0c0;
+    padding: 6px 4px;
+    display: flex;
+    gap: 4px;
+    border-top: 2px solid #808080;
+}
+.chat-input-row input {
+    flex: 1;
+    border: 2px solid;
+    border-color: #808080 #fff #fff #808080;
+    padding: 4px 6px;
+    font-family: inherit;
+}
+.chat-input-row input:focus {
+    outline: none;
+}
+
+/* Coluna Direita: Amigos e Usuários */
+.sidebar-right {
+    width: 180px;
+    min-width: 130px;
+}
+.users-panel {
+    flex: 3;
+}
+.friends-panel {
+    flex: 2;
+}
+
+/* Modais de diálogos de tamanho fixo */
+.dialog-overlay .window {
+    box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
+}
+
+/* Componentes de Formulário Comuns */
+button {
+    background: #c0c0c0;
+    border: 2px solid;
+    border-color: #fff #808080 #808080 #fff;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+}
+button:active {
+    border-color: #808080 #fff #fff #808080;
+}
+button.default-btn {
+    font-weight: bold;
+}
+input[type="text"], input[type="password"], select {
+    border: 2px solid;
+    border-color: #808080 #fff #fff #808080;
+    padding: 3px 6px;
+    background: white;
+    font-family: inherit;
+}
+.field-row-stacked {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Listas / Árvores */
+.tree-view {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    background: white;
+}
+.tree-view li {
+    padding: 3px 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+}
+.tree-view li:hover {
+    background: #e0e0e0;
+}
+.tree-view li.active {
+    background: #000080;
+    color: white;
+}
+.tree-view li.unread {
+    font-weight: bold;
+}
+
+/* Estilização de Usuário na lista */
+.user-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.user-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.user-dot.online { background: #00ff00; }
+.user-dot.offline { background: #808080; }
+.user-dot.ausente { background: #ffaa00; }
+.user-dot.ocupado { background: #ff0000; }
+
+/* Mensagens de Chat */
+.msg-line {
+    line-height: 1.4;
+    word-break: break-all;
+    margin: 2px 0;
+}
+.msg-time {
+    color: #808080;
+    font-size: 11px;
+    margin-right: 4px;
+}
+.msg-sender {
+    font-weight: bold;
+    margin-right: 4px;
+}
+.msg-badge {
+    font-size: 11px;
+    font-weight: bold;
+    padding: 1px 3px;
+    border: 1px solid #808080;
+    background: #e0e0e0;
+    color: #555;
+    margin-right: 4px;
+}
+.msg-system {
+    color: #000080;
+    font-style: italic;
+}
+.msg-private {
+    color: #800080;
+}
+
+/* Barra de Status */
+.status-bar {
+    display: flex;
+    background: #c0c0c0;
+    margin-top: 4px;
+    gap: 2px;
+    padding: 2px;
+    border-top: 1px solid #fff;
+    user-select: none;
+}
+.status-bar-field {
+    border: 2px solid;
+    border-color: #808080 #fff #fff #808080;
+    margin: 0;
+    padding: 2px 6px;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.status-selectors, .color-selectors {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto !important;
+}
+
+/* Tabela de exploração */
+#explore-rooms-list tr:hover {
+    background: #000080;
+    color: white;
+    cursor: pointer;
+}
+#explore-rooms-list td {
+    padding: 4px;
+}
+.rooms-container td, .rooms-container th {
+    border: 1px solid #dfdfdf;
+}
