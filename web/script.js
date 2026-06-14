@@ -80,6 +80,7 @@ window.exibirAlerta = function(mensagem) {
         const statusEl = document.getElementById('login-status');
         if (statusEl) {
             statusEl.textContent = mensagem;
+            statusEl.style.color = '#800000';
             return;
         }
     }
@@ -91,6 +92,10 @@ window.autenticacaoResposta = function(dados) {
     const msg = dados.message;
     const statusEl = document.getElementById('login-status');
     const action = dados.action;
+    
+    // Sempre re-habilita os botões de login/registro ao receber resposta
+    document.getElementById('btn-login').disabled = false;
+    document.getElementById('btn-register').disabled = false;
     
     if (status === 'success') {
         if (action === 'register') {
@@ -106,7 +111,7 @@ window.autenticacaoResposta = function(dados) {
             return;
         }
         
-        currentUsername = dados.username;
+        currentUsername = dados.username || document.getElementById('login-username').value.trim();
         myColor = dados.color || '#000000';
         myRole = dados.role || 'user';
         
@@ -121,8 +126,7 @@ window.autenticacaoResposta = function(dados) {
         // Solicita o estado geral ao motor do Python
         window.pywebview.api.request_state();
     } else {
-        statusEl.textContent = msg;
-        statusEl.style.color = '#800000';
+        window.exibirAlerta(dados.message || msg || "Erro de autenticação.");
     }
 };
 
@@ -271,6 +275,10 @@ function fazerLogin() {
         return;
     }
     
+    // Desabilita botões para evitar clique duplo e sinalizar carregamento
+    document.getElementById('btn-login').disabled = true;
+    document.getElementById('btn-register').disabled = true;
+    
     statusEl.textContent = 'Conectando ao servidor...';
     
     window.pywebview.api.conectar_servidor(ip, porta).then(success => {
@@ -279,9 +287,13 @@ function fazerLogin() {
             window.pywebview.api.login(user, pass);
         } else {
             statusEl.textContent = 'Erro ao conectar ao servidor.';
+            document.getElementById('btn-login').disabled = false;
+            document.getElementById('btn-register').disabled = false;
         }
     }).catch(err => {
         statusEl.textContent = 'Erro de rede na ponte API.';
+        document.getElementById('btn-login').disabled = false;
+        document.getElementById('btn-register').disabled = false;
     });
 }
 
@@ -300,6 +312,10 @@ function fazerRegistro() {
         return;
     }
     
+    // Desabilita botões para evitar clique duplo e sinalizar carregamento
+    document.getElementById('btn-login').disabled = true;
+    document.getElementById('btn-register').disabled = true;
+    
     statusEl.textContent = 'Conectando ao servidor...';
     
     window.pywebview.api.conectar_servidor(ip, porta).then(success => {
@@ -308,9 +324,13 @@ function fazerRegistro() {
             window.pywebview.api.registrar(user, pass);
         } else {
             statusEl.textContent = 'Erro ao conectar ao servidor.';
+            document.getElementById('btn-login').disabled = false;
+            document.getElementById('btn-register').disabled = false;
         }
     }).catch(err => {
         statusEl.textContent = 'Erro de rede na ponte API.';
+        document.getElementById('btn-login').disabled = false;
+        document.getElementById('btn-register').disabled = false;
     });
 }
 
