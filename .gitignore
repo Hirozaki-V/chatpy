@@ -1,0 +1,18 @@
+# Python local
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Bancos de dados locais
+*.db
+*.sqlite3
+
+# Certificados de segurança gerados localmente (NÃO devem ir pro repositório público por segurança!)
+*.key
+*.crt
+
+# Arquivos de configuração local
+config_local.json
+
+# Logs
+logs/
