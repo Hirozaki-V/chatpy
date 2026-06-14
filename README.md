@@ -27,7 +27,10 @@ Este projeto foi refatorado para transformar um protótipo básico em uma aplica
 * **Estado Incremental (Deltas)**: Em vez de requisitar e transmitir o estado inteiro do servidor a cada segundo, o servidor envia apenas atualizações pontuais e atômicas quando um evento ocorre (ex: novos usuários entram, mudam de status ou salas são criadas). Isso poupa largura de banda e ciclos de CPU tanto do servidor quanto do cliente.
 
 ### 🎨 5. Interface Gráfica Inteligente e Responsiva
-* **Layout Fluido (Ordem de Empacotamento)**: O layout foi reorganizado utilizando `.pack()` de forma que a barra inferior de digitação (`bottom_bar`) e a barra de controle superior (`top_bar`) permaneçam sempre visíveis mesmo se o usuário redimensionar a janela para tamanhos mínimos.
+* **Layout Fluido e Responsivo**: O empacotamento (`.pack()`) garante que a barra inferior de digitação (`bottom_bar`), a barra superior e a barra lateral direita (`sidebar`) nunca sejam engolidas ou sumam ao redimensionar a janela para dimensões mínimas.
+* **Centralização Inteligente (Multi-Monitores)**: Todas as janelas secundárias/diálogos (`Toplevel`) abrem perfeitamente centralizadas em relação à janela principal no monitor ativo em que ela está renderizada.
+* **Timestamps Unificados**: Todas as mensagens (histórico e mensagens ao vivo) exibem um timestamp unificado no formato `[YYYY-MM-DD HH:MM:SS]` na interface gráfica. O histórico carrega perfeitamente integrado, eliminando linhas e divisórias visuais de cabeçalho.
+* **Painel de Moderação em Destaque**: Moderadores e Administradores têm acesso a uma seção de ferramentas administrativas em vermelho destacado, habilitada dinamicamente dependendo do canal (DM vs Sala) e das permissões do usuário.
 * **Markdown Básico Integrado**: Renderiza textos no chat utilizando formatação em tempo de execução:
   * `**negrito**` -> Texto em negrito.
   * `*itálico*` -> Texto em itálico.
@@ -38,6 +41,7 @@ Este projeto foi refatorado para transformar um protótipo básico em uma aplica
 * **Visualização de Imagens no Chat**: Se o usuário enviar um arquivo de imagem (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), o chat exibirá uma miniatura estilizada de até 120x120px no corpo da conversa. A aplicação usa a biblioteca `Pillow` se disponível (e provê fallback nativo via Tkinter `PhotoImage` para formatos PNG/GIF caso não esteja instalada).
 * **Drag & Drop de Arquivos**: O cliente suporta arrastar e soltar arquivos de imagem/texto diretamente na área de conversa para envio rápido (utilizando a biblioteca `tkinterdnd2`, com fallback seguro se o sistema não possuir suporte).
 * **Criação de Salas Unificada**: Interface simples e direta para criar canais protegidos por senha. Canais privados são indicados visualmente por um ícone de cadeado (`🔒`) na lista de salas.
+* **Confirmação de Saída**: O fechamento da aplicação através do botão "X" da janela exibe um diálogo de confirmação para prevenir a perda acidental da sessão de chat.
 
 ---
 
