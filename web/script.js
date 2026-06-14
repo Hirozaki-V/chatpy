@@ -21,7 +21,30 @@ document.addEventListener('DOMContentLoaded', () => {
     // Captura Enter nos campos de login
     document.getElementById('login-username').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
     document.getElementById('login-password').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
+    
+    // Aguarda carregar a API do PyWebView
+    esperarApiEParent();
 });
+
+function esperarApiEParent() {
+    if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.obter_config_inicial().then(config => {
+            if (config) {
+                if (config.servidor_ip) document.getElementById('server-ip').value = config.servidor_ip;
+                if (config.servidor_porta) document.getElementById('server-port').value = config.servidor_porta;
+            }
+            // Sinaliza para o Python que a página está carregada e pronta para receber JS
+            window.pywebview.api.inicializar_interface();
+        }).catch(err => {
+            console.error("Erro ao obter config inicial:", err);
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.inicializar_interface) {
+                window.pywebview.api.inicializar_interface();
+            }
+        });
+    } else {
+        setTimeout(esperarApiEParent, 100);
+    }
+}
 
 // Função para reproduzir um bip de MSN Nudge clássico offline (Web Audio API)
 function tocarBipeNudge() {
@@ -53,6 +76,13 @@ function tocarBipeNudge() {
 // Chamadas obrigatórias que o Python (cliente_gui.py) fará via evaluate_js
 
 window.exibirAlerta = function(mensagem) {
+    if (!currentUsername) {
+        const statusEl = document.getElementById('login-status');
+        if (statusEl) {
+            statusEl.textContent = mensagem;
+            return;
+        }
+    }
     alert(mensagem);
 };
 
@@ -212,25 +242,53 @@ window.exibirPopupSenha = function(room) {
 // --- LOGICA INTERNA ---
 
 function fazerLogin() {
+    const ip = document.getElementById('server-ip').value.trim();
+    const porta = document.getElementById('server-port').value.trim();
     const user = document.getElementById('login-username').value.trim();
     const pass = document.getElementById('login-password').value.trim();
-    if(!user || !pass) {
+    
+    if(!user || !pass || !ip || !porta) {
         document.getElementById('login-status').textContent = 'Preencha todos os campos.';
         return;
     }
-    document.getElementById('login-status').textContent = 'Conectando...';
-    window.pywebview.api.login(user, pass);
+    
+    document.getElementById('login-status').textContent = 'Conectando ao servidor...';
+    
+    window.pywebview.api.conectar_servidor(ip, porta).then(success => {
+        if (success) {
+            document.getElementById('login-status').textContent = 'Autenticando...';
+            window.pywebview.api.login(user, pass);
+        } else {
+            document.getElementById('login-status').textContent = 'Erro ao conectar ao servidor.';
+        }
+    }).catch(err => {
+        document.getElementById('login-status').textContent = 'Erro de rede na ponte API.';
+    });
 }
 
 function fazerRegistro() {
+    const ip = document.getElementById('server-ip').value.trim();
+    const porta = document.getElementById('server-port').value.trim();
     const user = document.getElementById('login-username').value.trim();
     const pass = document.getElementById('login-password').value.trim();
-    if(!user || !pass) {
+    
+    if(!user || !pass || !ip || !porta) {
         document.getElementById('login-status').textContent = 'Preencha todos os campos.';
         return;
     }
-    document.getElementById('login-status').textContent = 'Registrando...';
-    window.pywebview.api.registrar(user, pass);
+    
+    document.getElementById('login-status').textContent = 'Conectando ao servidor...';
+    
+    window.pywebview.api.conectar_servidor(ip, porta).then(success => {
+        if (success) {
+            document.getElementById('login-status').textContent = 'Registrando...';
+            window.pywebview.api.registrar(user, pass);
+        } else {
+            document.getElementById('login-status').textContent = 'Erro ao conectar ao servidor.';
+        }
+    }).catch(err => {
+        document.getElementById('login-status').textContent = 'Erro de rede na ponte API.';
+    });
 }
 
 function fecharApp() {

@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO)
 engine = ChatEngine()
 window = None
 async_loop = None
+pagina_carregada = False
 
 def get_web_directory():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,17 +32,17 @@ def carregar_config_local():
 
 # Callbacks para o ChatEngine atualizar a UI do PyWebView
 def callback_conexao(status):
-    if window:
+    if window and pagina_carregada:
         window.evaluate_js(f"if(window.exibirAlerta) {{ if(!{str(status).lower()}) window.exibirAlerta('⚠️ Conexão perdida ou falha ao conectar com o servidor!'); }}")
         window.evaluate_js(f"if(window.atualizarEstadoGeral) window.atualizarEstadoGeral({{}});")
 
 def callback_auth(dados):
-    if window:
+    if window and pagina_carregada:
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.autenticacaoResposta) window.autenticacaoResposta({dados_json});")
 
 def callback_mensagem(dados):
-    if window:
+    if window and pagina_carregada:
         if dados.get("type") == "history":
             room = dados.get("room")
             messages = json.dumps(dados.get("messages", []))
@@ -51,17 +52,17 @@ def callback_mensagem(dados):
             window.evaluate_js(f"if(window.adicionarMensagem) window.adicionarMensagem({dados_json});")
 
 def callback_privado(dados):
-    if window:
+    if window and pagina_carregada:
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.adicionarMensagem) window.adicionarMensagem({dados_json});")
 
 def callback_estado(dados):
-    if window:
+    if window and pagina_carregada:
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.atualizarEstadoGeral) window.atualizarEstadoGeral({dados_json});")
 
 def callback_user_joined(dados):
-    if window:
+    if window and pagina_carregada:
         room = dados.get("room")
         users = engine.lista_usuarios_sala.get(room, [])
         users_json = json.dumps(users)
@@ -71,7 +72,7 @@ def callback_user_joined(dados):
         window.evaluate_js(f"if(window.adicionarMensagem) window.adicionarMensagem({{ 'room': '{room}', 'sender': '[Servidor]', 'content': '{user_info.get('name')} entrou na sala.', 'is_system': true, 'timestamp': '' }});")
 
 def callback_user_left(dados):
-    if window:
+    if window and pagina_carregada:
         room = dados.get("room")
         username = dados.get("username")
         users = engine.lista_usuarios_sala.get(room, [])
@@ -81,17 +82,17 @@ def callback_user_left(dados):
         window.evaluate_js(f"if(window.adicionarMensagem) window.adicionarMensagem({{ 'room': '{room}', 'sender': '[Servidor]', 'content': '{username} saiu da sala.', 'is_system': true, 'timestamp': '' }});")
 
 def callback_typing(dados):
-    if window:
+    if window and pagina_carregada:
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.exibirDigitando) window.exibirDigitando({dados_json});")
 
 def callback_nudge(dados):
-    if window:
+    if window and pagina_carregada:
         dados_json = json.dumps(dados)
         window.evaluate_js(f"if(window.chamarAtencaoNudge) window.chamarAtencaoNudge({dados_json});")
 
 def callback_join_response(dados):
-    if window:
+    if window and pagina_carregada:
         room = dados.get("room")
         status = dados.get("status")
         if status == "success":
@@ -104,11 +105,60 @@ def callback_join_response(dados):
             window.evaluate_js(f"if(window.removerAba) window.removerAba('{room}');")
 
 def callback_join_password_required(dados):
-    if window:
+    if window and pagina_carregada:
         room = dados.get("room")
         window.evaluate_js(f"if(window.exibirPopupSenha) window.exibirPopupSenha('{room}');")
 
 class JsApi:
+    def inicializar_interface(self):
+        global pagina_carregada
+        pagina_carregada = True
+        status = engine.running and engine.websocket is not None
+        callback_conexao(status)
+
+    def obter_config_inicial(self):
+        config = carregar_config_local()
+        return {
+            "servidor_ip": config.get("servidor_ip", "127.0.0.1"),
+            "servidor_porta": config.get("servidor_porta", 5000),
+            "conectado": engine.running and engine.websocket is not None
+        }
+
+    def conectar_servidor(self, ip, porta):
+        async def do_connect():
+            target_uri = f"wss://{ip}:{porta}"
+            if engine.websocket and engine.running and engine.uri == target_uri:
+                return True
+            try:
+                if engine.websocket:
+                    await engine.websocket.close()
+            except Exception:
+                pass
+            success = await engine.conectar(ip, porta)
+            if success:
+                config_path = "config_local.json"
+                config = {"servidor_ip": ip, "servidor_porta": int(porta)}
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            config = json.load(f)
+                    except Exception:
+                        pass
+                config["servidor_ip"] = ip
+                config["servidor_porta"] = int(porta)
+                try:
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump(config, f, indent=4)
+                except Exception:
+                    pass
+            return success
+        
+        future = asyncio.run_coroutine_threadsafe(do_connect(), async_loop)
+        try:
+            return future.result(timeout=5.0)
+        except Exception:
+            return False
+
     def login(self, username, password):
         asyncio.run_coroutine_threadsafe(engine.login(username, password), async_loop)
 

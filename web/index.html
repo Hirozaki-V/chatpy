@@ -26,7 +26,18 @@
                 <h2 style="margin: 0; font-family: monospace; letter-spacing: 2px; color: #ffffff;">ChatPy v2.0</h2>
                 <small style="color: #dfdfdf;">Cliente WebSockets Retrô</small>
             </div>
-            
+            <fieldset style="margin-bottom: 12px; padding: 10px; border: 2px solid; border-color: #808080 #fff #fff #808080;">
+                <legend style="font-weight: bold; color: #000080; padding: 0 4px;">Servidor</legend>
+                <div class="field-row" style="margin-bottom: 6px;">
+                    <label for="server-ip" style="width: 50px;">IP:</label>
+                    <input id="server-ip" type="text" value="127.0.0.1" style="flex: 1;" />
+                </div>
+                <div class="field-row">
+                    <label for="server-port" style="width: 50px;">Porta:</label>
+                    <input id="server-port" type="text" value="5000" style="flex: 1;" />
+                </div>
+            </fieldset>
+
             <div class="field-row-stacked" style="margin-bottom: 10px;">
                 <label for="login-username">Nome de Usuário:</label>
                 <input id="login-username" type="text" placeholder="Apelido..." autofocus />
