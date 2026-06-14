@@ -81,10 +81,16 @@ window.exibirAlerta = function(mensagem) {
         if (statusEl) {
             statusEl.textContent = mensagem;
             statusEl.style.color = '#800000';
-            return;
         }
+    } else {
+        window.adicionarMensagem({
+            room: activeTab || '#geral',
+            sender: '[Sistema]',
+            content: '⚠️ ' + mensagem,
+            is_system: true,
+            timestamp: new Date().toLocaleTimeString()
+        });
     }
-    alert(mensagem);
 };
 
 window.autenticacaoResposta = function(dados) {
@@ -99,15 +105,12 @@ window.autenticacaoResposta = function(dados) {
     
     if (status === 'success') {
         if (action === 'register') {
-            alert("Conta criada com sucesso! Por favor, faça login com suas novas credenciais.");
+            statusEl.textContent = "Conta criada com sucesso! Faça login abaixo.";
+            statusEl.style.color = '#008000';
             
             // Limpa o campo de senha e foca nele
             document.getElementById('login-password').value = '';
             document.getElementById('login-password').focus();
-            
-            // Atualiza status do login com cor verde retrô para sucesso
-            statusEl.textContent = 'Conta registrada com sucesso. Faça o login.';
-            statusEl.style.color = '#008000';
             return;
         }
         
@@ -596,7 +599,14 @@ function confirmarCriarSala() {
     const nome = document.getElementById('new-room-name').value.trim();
     const pass = document.getElementById('new-room-pass').value.trim();
     if (!nome || !nome.startsWith('#')) {
-        alert('O nome da sala deve começar com #');
+        window.adicionarMensagem({
+            room: activeTab || '#geral',
+            sender: '[Sistema]',
+            content: '⚠️ O nome da sala deve começar com #',
+            is_system: true,
+            timestamp: new Date().toLocaleTimeString()
+        });
+        fecharDialog('dialog-create-room');
         return;
     }
     fecharDialog('dialog-create-room');
@@ -669,7 +679,13 @@ function enviarConviteAmigo() {
     if (!user) return;
     window.pywebview.api.friend_action('add', user);
     input.value = '';
-    alert(`Solicitação de amizade enviada para ${user}!`);
+    window.adicionarMensagem({
+        room: activeTab || '#geral',
+        sender: '[Sistema]',
+        content: `✓ Solicitação de amizade enviada para ${user}!`,
+        is_system: true,
+        timestamp: new Date().toLocaleTimeString()
+    });
     fecharDialog('dialog-friends');
 }
 
@@ -691,5 +707,11 @@ function mostrarAjuda() {
 }
 
 function mostrarSobre() {
-    alert("ChatPy v2.0 - Edição Especial Retrô\n\nDesenvolvido como um cliente leve offline-first sobre WebSockets.\nVisual clássico do Windows 98 / mIRC!");
+    window.adicionarMensagem({
+        room: activeTab || '#geral',
+        sender: '[Sistema]',
+        content: "ℹ️ ChatPy v2.0 - Edição Especial Retrô. Desenvolvido como um cliente leve offline-first sobre WebSockets. Visual clássico do Windows 98 / mIRC!",
+        is_system: true,
+        timestamp: new Date().toLocaleTimeString()
+    });
 }

@@ -3,6 +3,9 @@
     box-sizing: border-box;
     font-family: "MS Sans Serif", "Tahoma", "Arial", sans-serif;
     font-size: 11px;
+}
+
+img {
     image-rendering: pixelated;
 }
 
