@@ -116,7 +116,40 @@ def callback_join_password_required(dados):
         room = dados.get("room")
         window.evaluate_js(f"if(window.exibirPopupSenha) window.exibirPopupSenha('{room}');")
 
+def callback_friend_request(dados):
+    if window and pagina_carregada:
+        from_user = dados.get("from")
+        window.evaluate_js(f"if(window.receberConviteJS) window.receberConviteJS('{from_user}');")
+
+def callback_file_share(dados):
+    if window and pagina_carregada:
+        dados_json = json.dumps(dados)
+        window.evaluate_js(f"if(window.receberArquivoJS) window.receberArquivoJS({dados_json});")
+
 class JsApi:
+    def __init__(self):
+        self._maximized = False
+
+    def toggle_maximize(self):
+        if window:
+            if self._maximized:
+                window.restore()
+                self._maximized = False
+            else:
+                window.maximize()
+                self._maximized = True
+
+    def enviar_arquivo_base64(self, room, filename, data):
+        asyncio.run_coroutine_threadsafe(
+            engine.enviar_json({
+                "type": "file_share",
+                "room": room,
+                "filename": filename,
+                "data": data
+            }),
+            async_loop
+        )
+
     def inicializar_interface(self):
         global pagina_carregada
         pagina_carregada = True
@@ -278,6 +311,8 @@ def main():
     engine.registrar_callback("on_nudge", callback_nudge)
     engine.registrar_callback("on_join_response", callback_join_response)
     engine.registrar_callback("on_join_password_required", callback_join_password_required)
+    engine.registrar_callback("on_friend_request", callback_friend_request)
+    engine.registrar_callback("on_file_share", callback_file_share)
 
     # 5. Inicializa e abre a janela pywebview
     web_dir = get_web_directory()
@@ -291,7 +326,8 @@ def main():
         height=650,
         min_size=(650, 500),
         resizable=True,
-        frameless=True
+        frameless=True,
+        easy_drag=False
     )
     
     webview.start(debug=True)

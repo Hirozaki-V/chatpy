@@ -3,6 +3,13 @@
     box-sizing: border-box;
     font-family: "MS Sans Serif", "Tahoma", "Arial", sans-serif;
     font-size: 11px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.chat-messages, .msg-line, input, select, textarea {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 img {
@@ -230,6 +237,7 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
 /* Coluna Central: Chat */
 .chat-area {
     flex: 2;
+    position: relative; /* Para posicionar o painel de emojis e outros elementos flutuantes */
 }
 .chat-messages {
     padding: 8px;

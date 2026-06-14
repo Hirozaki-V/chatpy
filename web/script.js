@@ -18,6 +18,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Desativar o Menu de Contexto do Navegador (Botão Direito)
     document.addEventListener('contextmenu', event => event.preventDefault());
 
+    // Fecha o menu de contexto customizado ao clicar em qualquer lugar
+    document.addEventListener('click', () => {
+        const menu = document.getElementById('custom-context-menu');
+        if (menu) menu.style.display = 'none';
+    });
+
     const usernameInput = document.getElementById('login-username');
     if (usernameInput) usernameInput.focus();
     
@@ -30,6 +36,43 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('register-password').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerRegistro(); });
     document.getElementById('register-password-confirm').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerRegistro(); });
     
+    // Listener para seleção e envio de arquivo
+    const fileInput = document.getElementById('file-input');
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            if (file.size > 1024 * 1024) {
+                window.adicionarMensagem({
+                    room: activeTab,
+                    sender: '[Sistema]',
+                    content: '⚠️ Erro: O arquivo excede o limite de 1MB.',
+                    is_system: true,
+                    timestamp: new Date().toLocaleTimeString()
+                });
+                fileInput.value = '';
+                return;
+            }
+            
+            window.adicionarMensagem({
+                room: activeTab,
+                sender: '[Sistema]',
+                content: `📤 Enviando arquivo: ${file.name}...`,
+                is_system: true,
+                timestamp: new Date().toLocaleTimeString()
+            });
+
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const base64data = reader.result;
+                window.pywebview.api.enviar_arquivo_base64(activeTab, file.name, base64data);
+            };
+            reader.readAsDataURL(file);
+            fileInput.value = '';
+        });
+    }
+
     // Aguarda carregar a API do PyWebView
     esperarApiEParent();
 });
@@ -139,6 +182,12 @@ window.autenticacaoResposta = function(dados) {
         myColor = dados.color || '#000000';
         myRole = dados.role || 'user';
         
+        // Atualiza o título da janela principal
+        const appTitleEl = document.getElementById('app-title');
+        if (appTitleEl) {
+            appTitleEl.innerHTML = '<span class="title-icon">💬</span> ChatPy - Conectado como: ' + currentUsername;
+        }
+
         // Esconde modal de login e exibe a tela de chat
         document.getElementById('login-modal').style.display = 'none';
         document.getElementById('main-app').style.display = 'flex';
@@ -420,6 +469,16 @@ function desconectarEVoltar() {
     unreadCounts = {};
 }
 
+function fecharAbaContexto(room) {
+    if (confirm(`Deseja fechar a aba ${room}?`)) {
+        if (room.startsWith('#')) {
+            window.pywebview.api.leave_room(room);
+        } else {
+            window.removerAba(room);
+        }
+    }
+}
+
 function renderizarAbas() {
     const list = document.getElementById('tabs-list');
     list.innerHTML = '';
@@ -435,18 +494,20 @@ function renderizarAbas() {
         
         li.onclick = () => selecionarAba(room);
         
-        if (room !== '#geral') {
-            li.oncontextmenu = (e) => {
-                e.preventDefault();
-                if (confirm(`Deseja fechar a aba ${room}?`)) {
-                    if (room.startsWith('#')) {
-                        window.pywebview.api.leave_room(room);
-                    } else {
-                        window.removerAba(room);
-                    }
-                }
-            };
-        }
+        // Context menu customizado para as abas
+        li.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (room === '#geral') return;
+            
+            const menu = document.getElementById('custom-context-menu');
+            if (menu) {
+                menu.innerHTML = `<li onclick="fecharAbaContexto('${room}')">❌ Fechar Aba</li>`;
+                menu.style.left = `${e.pageX}px`;
+                menu.style.top = `${e.pageY}px`;
+                menu.style.display = 'block';
+            }
+        };
         
         list.appendChild(li);
     });
@@ -485,6 +546,17 @@ function selecionarAba(room) {
     document.getElementById('chat-input').focus();
 }
 
+function adicionarAmigoContexto(name) {
+    window.pywebview.api.friend_action('add', name);
+    window.adicionarMensagem({
+        room: activeTab || '#geral',
+        sender: '[Sistema]',
+        content: `✓ Solicitação de amizade enviada para ${name}!`,
+        is_system: true,
+        timestamp: new Date().toLocaleTimeString()
+    });
+}
+
 function renderizarUsuarios() {
     const list = document.getElementById('users-list');
     list.innerHTML = '';
@@ -506,6 +578,23 @@ function renderizarUsuarios() {
         li.ondblclick = () => {
             if (user.name !== currentUsername) {
                 abrirDM(user.name);
+            }
+        };
+
+        // Context menu customizado para usuários
+        li.oncontextmenu = (e) => {
+            if (user.name === currentUsername) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const menu = document.getElementById('custom-context-menu');
+            if (menu) {
+                menu.innerHTML = `
+                    <li onclick="abrirDM('${user.name}')">💬 Enviar DM</li>
+                    <li onclick="adicionarAmigoContexto('${user.name}')">➕ Adicionar Amigo</li>
+                `;
+                menu.style.left = `${e.pageX}px`;
+                menu.style.top = `${e.pageY}px`;
+                menu.style.display = 'block';
             }
         };
         
@@ -654,21 +743,18 @@ function abrirCriarSala() {
 }
 
 function confirmarCriarSala() {
-    const nome = document.getElementById('new-room-name').value.trim();
+    let nome = document.getElementById('new-room-name').value.trim();
     const pass = document.getElementById('new-room-pass').value.trim();
-    if (!nome || !nome.startsWith('#')) {
-        window.adicionarMensagem({
-            room: activeTab || '#geral',
-            sender: '[Sistema]',
-            content: '⚠️ O nome da sala deve começar com #',
-            is_system: true,
-            timestamp: new Date().toLocaleTimeString()
-        });
-        fecharDialog('dialog-create-room');
-        return;
+    if (!nome) return;
+    
+    if (!nome.startsWith('#')) {
+        nome = '#' + nome;
     }
+    
     fecharDialog('dialog-create-room');
     window.pywebview.api.create_room(nome, pass);
+    window.pywebview.api.join_room(nome, pass);
+    selecionarAba(nome);
 }
 
 function abrirExplorarSalas() {
@@ -772,4 +858,72 @@ function mostrarSobre() {
         is_system: true,
         timestamp: new Date().toLocaleTimeString()
     });
+}
+
+// --- AJUSTES NOVOS DE USABILIDADE ---
+
+// Recebimento de convite de amizade
+window.receberConviteJS = function(from_user) {
+    if (!pendingRequests.includes(from_user)) {
+        pendingRequests.push(from_user);
+    }
+    renderizarConvites();
+    window.adicionarMensagem({
+        room: activeTab || '#geral',
+        sender: '[Sistema]',
+        content: '📩 Novo convite de amizade recebido de ' + from_user,
+        is_system: true,
+        timestamp: new Date().toLocaleTimeString()
+    });
+    tocarBipeNudge();
+};
+
+// Recebimento de arquivos compartilhados
+window.receberArquivoJS = function(dados) {
+    const room = dados.room || '#geral';
+    const sender = dados.sender;
+    const filename = dados.filename;
+    const fileData = dados.data;
+    const ts = dados.timestamp || '';
+    const senderColor = dados.sender_color || '#000000';
+    const badge = dados.badge || '';
+
+    // Cria o link HTML de download
+    const contentHtml = `📁 Compartilhou o arquivo: <a href="${fileData}" download="${filename}" style="color: #000080; font-weight: bold; text-decoration: underline;">${filename}</a>`;
+    
+    window.adicionarMensagem({
+        room: room,
+        sender: sender,
+        content: contentHtml,
+        is_system: false,
+        timestamp: ts,
+        sender_color: senderColor,
+        badge: badge
+    });
+};
+
+// Painel de Emojis
+function abrirPainelEmojis() {
+    const panel = document.getElementById('emoji-panel');
+    if (panel) {
+        if (panel.style.display === 'none') {
+            panel.style.display = 'block';
+        } else {
+            panel.style.display = 'none';
+        }
+    }
+}
+
+function fecharPainelEmojis() {
+    const panel = document.getElementById('emoji-panel');
+    if (panel) panel.style.display = 'none';
+}
+
+function inserirEmoji(emoji) {
+    const input = document.getElementById('chat-input');
+    if (input) {
+        input.value += emoji;
+        fecharPainelEmojis();
+        input.focus();
+    }
 }

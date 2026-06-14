@@ -108,7 +108,7 @@
         </div>
         <div class="title-bar-controls">
             <button aria-label="Minimize" onclick="minimizarJanela()"></button>
-            <button aria-label="Maximize" onclick="maximizarJanela()"></button>
+            <button aria-label="Maximize" onclick="window.pywebview.api.toggle_maximize()"></button>
             <button aria-label="Close" onclick="fecharApp()"></button>
         </div>
     </div>
@@ -157,9 +157,32 @@
                 </div>
                 
                 <!-- Input de Mensagem -->
-                <div class="chat-input-row">
+                <div class="chat-input-row" style="position: relative;">
                     <input type="text" id="chat-input" placeholder="Digite uma mensagem ou comando..." onkeydown="detectarEnter(event)" oninput="registrarDigitando()" />
+                    <button id="btn-emoji" onclick="abrirPainelEmojis()">😀</button>
+                    <button id="btn-attach" onclick="document.getElementById('file-input').click()">📎</button>
+                    <input type="file" id="file-input" style="display:none" />
                     <button id="btn-send" class="default-btn" onclick="enviarMensagemAtual()">Enviar</button>
+                </div>
+
+                <!-- Mini Painel de Emojis -->
+                <div id="emoji-panel" class="window" style="display: none; position: absolute; bottom: 45px; right: 10px; width: 140px; z-index: 1001; padding: 3px;">
+                    <div class="title-bar" style="padding: 1px 3px; font-size: 10px;">
+                        <div class="title-bar-text">Emojis</div>
+                        <div class="title-bar-controls">
+                            <button aria-label="Close" onclick="fecharPainelEmojis()" style="width: 12px; height: 10px; font-size: 7px;"></button>
+                        </div>
+                    </div>
+                    <div class="window-body" style="flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 4px; justify-content: center; background: #fff; border: 1px solid #808080;">
+                        <span class="emoji-item" onclick="inserirEmoji('😀')" style="cursor: pointer; font-size: 16px;">😀</span>
+                        <span class="emoji-item" onclick="inserirEmoji('😂')" style="cursor: pointer; font-size: 16px;">😂</span>
+                        <span class="emoji-item" onclick="inserirEmoji('😍')" style="cursor: pointer; font-size: 16px;">😍</span>
+                        <span class="emoji-item" onclick="inserirEmoji('👍')" style="cursor: pointer; font-size: 16px;">👍</span>
+                        <span class="emoji-item" onclick="inserirEmoji('🔥')" style="cursor: pointer; font-size: 16px;">🔥</span>
+                        <span class="emoji-item" onclick="inserirEmoji('🎉')" style="cursor: pointer; font-size: 16px;">🎉</span>
+                        <span class="emoji-item" onclick="inserirEmoji('😢')" style="cursor: pointer; font-size: 16px;">😢</span>
+                        <span class="emoji-item" onclick="inserirEmoji('😮')" style="cursor: pointer; font-size: 16px;">😮</span>
+                    </div>
                 </div>
             </div>
 
@@ -326,6 +349,8 @@
         </div>
     </div>
 </div>
+
+<div id="custom-context-menu" class="menu-dropdown" style="display:none; position:absolute; z-index:9999;"></div>
 
 <script src="script.js"></script>
 </body>
