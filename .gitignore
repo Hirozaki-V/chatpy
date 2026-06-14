@@ -16,3 +16,4 @@ config_local.json
 
 # Logs
 logs/
+*.log

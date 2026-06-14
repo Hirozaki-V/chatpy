@@ -8,10 +8,41 @@ import os
 import json
 import ssl
 import random
+import logging
 
-# Configurações de Rede
-IP = '0.0.0.0'
-PORTA = 5000
+# Configuração do Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("servidor.log", encoding="utf-8")
+    ]
+)
+
+def carregar_config_servidor():
+    default_config = {
+        "ip": "0.0.0.0",
+        "porta": 5000
+    }
+    config_path = "config_server.json"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(default_config, f, indent=4)
+    except Exception:
+        pass
+    return default_config
+
+config_servidor = carregar_config_servidor()
+IP = config_servidor.get("ip", "0.0.0.0")
+PORTA = config_servidor.get("porta", 5000)
+
 
 # Estado da aplicação:
 # {socket: {"nome": "usuario", "salas": set(["#geral"]), "buffer": JsonSocketBuffer, "cor": "#hex", "status": "Online", "role": "user"}}
@@ -37,7 +68,7 @@ class JsonSocketBuffer:
                 self.buffer += dados.decode('utf-8')
                 if len(self.buffer) > self.max_buffer_size:
                     return None
-            except:
+            except (socket.error, UnicodeDecodeError):
                 return None
         
         linha, self.buffer = self.buffer.split("\n", 1)
@@ -51,7 +82,7 @@ def enviar_json(sock, dados):
         mensagem = (json.dumps(dados) + "\n").encode('utf-8')
         sock.sendall(mensagem)
         return True
-    except:
+    except socket.error:
         return False
 
 def sanitizar_string(s):
@@ -346,13 +377,13 @@ def broadcast_incremental(payload, sala_alvo=None, exceto_socket=None):
                 if sala_alvo in info['salas']:
                     try:
                         enviar_json(sock, payload)
-                    except:
+                    except socket.error:
                         sockets_para_remover.append(sock)
             else:
                 # Broadcast global para todos os conectados
                 try:
                     enviar_json(sock, payload)
-                except:
+                except socket.error:
                     sockets_para_remover.append(sock)
                     
     for sock in sockets_para_remover:
@@ -366,7 +397,7 @@ def enviar_para_usuario(nome_usuario, payload):
                 try:
                     enviar_json(sock, payload)
                     return True
-                except:
+                except socket.error:
                     pass
     return False
 
@@ -432,7 +463,7 @@ def enviar_privado(remetente, destinatario, texto, remetente_socket):
     # Envia de volta para o remetente
     try:
         enviar_json(remetente_socket, payload)
-    except:
+    except socket.error:
         pass
 
     # Tenta enviar para o destinatário se estiver online
@@ -450,7 +481,7 @@ def enviar_privado(remetente, destinatario, texto, remetente_socket):
         }
         try:
             enviar_json(remetente_socket, payload_err)
-        except:
+        except socket.error:
             pass
 
 def remover_cliente(cliente_socket):
@@ -463,7 +494,7 @@ def remover_cliente(cliente_socket):
     if info:
         try:
             cliente_socket.close()
-        except:
+        except socket.error:
             pass
         
         # Só transmite desconexão das salas públicas em que ele estava inscrito
@@ -471,7 +502,7 @@ def remover_cliente(cliente_socket):
         for sala in info['salas']:
             if not sala.startswith('@'):
                 aviso = f"[-] {nome} desconectou-se da sala."
-                print(f"[{sala}] {aviso}")
+                logging.info(f"[{sala}] {aviso}")
                 broadcast_incremental({
                     "type": "user_left",
                     "room": sala,
@@ -493,6 +524,995 @@ def obter_contagem_sala(sala):
             if sala in c_info['salas']:
                 contagem += 1
     return contagem
+
+def obter_info_cliente(cliente_socket):
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            info = clientes_conectados[cliente_socket]
+            return info.get("nome"), info.get("cor"), info.get("status"), info.get("role")
+    return None, None, None, None
+
+def tratar_join(cliente_socket, nome, dados):
+    _, _, status, role = obter_info_cliente(cliente_socket)
+    nova_sala = sanitizar_string(dados.get("room", "#geral"))
+    senha_fornecida = sanitizar_string(dados.get("password", ""))
+    
+    is_dm = nova_sala.startswith('@')
+    
+    if not is_dm:
+        if not nova_sala.startswith('#'):
+            nova_sala = "#" + nova_sala
+        
+        conn = obter_conexao()
+        c = conn.cursor()
+        
+        # 1. Verifica se está banido
+        c.execute("SELECT * FROM banimentos WHERE sala = ? AND usuario = ?", (nova_sala, nome))
+        if c.fetchone():
+            enviar_json(cliente_socket, {
+                "type": "join_response",
+                "status": "error",
+                "room": nova_sala,
+                "message": "Você está banido desta sala."
+            })
+            conn.close()
+            return
+            
+        # 2. Verifica se exige senha
+        c.execute("SELECT dono, senha FROM salas_config WHERE sala = ?", (nova_sala,))
+        row_s = c.fetchone()
+        if row_s:
+            dono, senha_db = row_s[0], row_s[1]
+            if senha_db and senha_db != senha_fornecida:
+                if not senha_fornecida:
+                    enviar_json(cliente_socket, {
+                        "type": "join_password_required",
+                        "room": nova_sala
+                    })
+                else:
+                    enviar_json(cliente_socket, {
+                        "type": "join_response",
+                        "status": "error",
+                        "room": nova_sala,
+                        "message": "Senha incorreta para a sala."
+                    })
+                conn.close()
+                return
+        else:
+            enviar_json(cliente_socket, {
+                "type": "join_response",
+                "status": "error",
+                "room": nova_sala,
+                "message": "Esta sala não existe. Use o botão 'Criar Nova Sala' para criá-la."
+            })
+            conn.close()
+            return
+        conn.close()
+
+    # Adiciona a nova sala à lista de salas ativas do cliente (Múltiplas salas)
+    ja_inscrito = False
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            if nova_sala in clientes_conectados[cliente_socket]['salas']:
+                ja_inscrito = True
+            else:
+                clientes_conectados[cliente_socket]['salas'].add(nova_sala)
+    
+    # Resposta de sucesso de entrada
+    enviar_json(cliente_socket, {
+        "type": "join_response",
+        "status": "success",
+        "room": nova_sala
+    })
+
+    nome, cor, status, role = obter_info_cliente(cliente_socket)
+    if not ja_inscrito:
+        # Notifica os outros membros sobre a entrada
+        dono_sala = "admin"
+        if not is_dm:
+            conn = obter_conexao()
+            c = conn.cursor()
+            c.execute("SELECT dono FROM salas_config WHERE sala = ?", (nova_sala,))
+            row_d = c.fetchone()
+            if row_d:
+                dono_sala = row_d[0]
+            conn.close()
+        
+        badge_val = ""
+        if role == 'admin':
+            badge_val = "⭐ Admin"
+        elif nome == dono_sala:
+            badge_val = "👑 Dono"
+
+        broadcast_incremental({
+            "type": "user_joined",
+            "room": nova_sala,
+            "user": {
+                "name": nome,
+                "color": cor,
+                "status": status,
+                "badge": badge_val
+            }
+        }, sala_alvo=nova_sala, exceto_socket=cliente_socket)
+        
+        # Atualiza a contagem da sala
+        contagem = obter_contagem_sala(nova_sala)
+        broadcast_incremental({
+            "type": "room_count_update",
+            "room": nova_sala,
+            "count": contagem
+        })
+    
+    # Envia o histórico da sala para o cliente
+    if is_dm:
+        dest_dm = nova_sala[1:]
+        sala_dm = obter_sala_dm(nome, dest_dm)
+        historico = buscar_historico(sala_dm)
+    else:
+        historico = buscar_historico(nova_sala)
+        
+    # Envia o dono atual da sala para atualizar os cargos na UI
+    dono_sala = "admin"
+    if not is_dm:
+        conn = obter_conexao()
+        c = conn.cursor()
+        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (nova_sala,))
+        row_d = c.fetchone()
+        if row_d:
+            dono_sala = row_d[0]
+        conn.close()
+
+    if historico:
+        msgs_envio = []
+        for msg in historico:
+            h_data, h_remetente, h_msg, h_cor, h_role = msg[0], msg[1], msg[2], msg[3], msg[4]
+            h_badge = ""
+            if not is_dm:
+                if h_role == 'admin':
+                    h_badge = "⭐ Admin"
+                elif h_remetente == dono_sala:
+                    h_badge = "👑 Dono"
+            msgs_envio.append({
+                "timestamp": h_data,
+                "sender": h_remetente,
+                "content": h_msg,
+                "sender_color": h_cor if h_cor else "#000000",
+                "badge": h_badge
+            })
+        enviar_json(cliente_socket, {
+            "type": "history",
+            "room": nova_sala,
+            "messages": msgs_envio
+        })
+        
+    usuarios_sala_lista = []
+    with clientes_lock:
+        for c_info in clientes_conectados.values():
+            if nova_sala in c_info['salas']:
+                badge_val = ""
+                if c_info.get('role') == 'admin':
+                    badge_val = "⭐ Admin"
+                elif c_info['nome'] == dono_sala:
+                    badge_val = "👑 Dono"
+                usuarios_sala_lista.append({
+                    "name": c_info['nome'],
+                    "color": c_info['cor'],
+                    "status": c_info['status'],
+                    "badge": badge_val
+                })
+
+    enviar_json(cliente_socket, {
+        "type": "state_update_room",
+        "room": nova_sala,
+        "room_owner": dono_sala,
+        "users": usuarios_sala_lista
+    })
+
+def tratar_leave(cliente_socket, nome, dados):
+    sala_a_sair = sanitizar_string(dados.get("room", ""))
+    if sala_a_sair and sala_a_sair != "#geral":
+        removida = False
+        with clientes_lock:
+            if cliente_socket in clientes_conectados:
+                if sala_a_sair in clientes_conectados[cliente_socket]['salas']:
+                    clientes_conectados[cliente_socket]['salas'].discard(sala_a_sair)
+                    removida = True
+        
+        if removida:
+            # Notifica membros restantes
+            broadcast_incremental({
+                "type": "user_left",
+                "room": sala_a_sair,
+                "username": nome
+            }, sala_alvo=sala_a_sair)
+            
+            # Atualiza a contagem da sala
+            contagem = obter_contagem_sala(sala_a_sair)
+            broadcast_incremental({
+                "type": "room_count_update",
+                "room": sala_a_sair,
+                "count": contagem
+            })
+
+def tratar_private_msg(cliente_socket, nome, dados):
+    destinatario = sanitizar_string(dados.get("to", ""))
+    conteudo = sanitizar_string(dados.get("content", ""))
+    if destinatario and conteudo:
+        enviar_privado(nome, destinatario, conteudo, cliente_socket)
+
+def tratar_typing(cliente_socket, nome, dados):
+    status_d = dados.get("status", False)
+    sala_typing = sanitizar_string(dados.get("room", "#geral"))
+    
+    broadcast_incremental({
+        "type": "typing_status",
+        "user": nome,
+        "room": sala_typing,
+        "status": status_d
+    }, sala_alvo=sala_typing, exceto_socket=cliente_socket)
+
+def tratar_set_color(cliente_socket, nome, dados):
+    cor_d = sanitizar_string(dados.get("color", "#000000"))
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            clientes_conectados[cliente_socket]['cor'] = cor_d
+    
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("UPDATE usuarios SET cor = ? WHERE nome = ?", (cor_d, nome))
+    conn.commit()
+    conn.close()
+    
+    # Delta de cor enviado apenas a quem compartilha as mesmas salas
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            salas_usuario = list(clientes_conectados[cliente_socket]['salas'])
+        else:
+            salas_usuario = []
+    for s in salas_usuario:
+        broadcast_incremental({
+            "type": "user_color_changed",
+            "username": nome,
+            "room": s,
+            "color": cor_d
+        }, sala_alvo=s)
+
+def tratar_set_status(cliente_socket, nome, dados):
+    status_d = sanitizar_string(dados.get("status", "Online"))
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            clientes_conectados[cliente_socket]['status'] = status_d
+            cor = clientes_conectados[cliente_socket]['cor']
+        else:
+            cor = "#000000"
+    
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("UPDATE usuarios SET status = ? WHERE nome = ?", (status_d, nome))
+    conn.commit()
+    conn.close()
+    
+    # Delta de status enviado para todas as salas do usuário
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            salas_usuario = list(clientes_conectados[cliente_socket]['salas'])
+        else:
+            salas_usuario = []
+    for s in salas_usuario:
+        broadcast_incremental({
+            "type": "user_status_changed",
+            "username": nome,
+            "room": s,
+            "status": status_d
+        }, sala_alvo=s)
+
+    # Atualiza também na lista dos amigos do usuário
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("SELECT usuario1 FROM amizades WHERE usuario2 = ?", (nome,))
+    amigos_nomes = [r[0] for r in c.fetchall()]
+    conn.close()
+    
+    for am_nome in amigos_nomes:
+        enviar_para_usuario(am_nome, {
+            "type": "friend_status_update",
+            "name": nome,
+            "status": status_d,
+            "online": True,
+            "color": cor
+        })
+
+def tratar_friend_action(cliente_socket, nome, dados):
+    action = dados.get("action")
+    target_f = sanitizar_string(dados.get("username", ""))
+    
+    if target_f:
+        if target_f == nome:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": "#geral",
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": "Você não pode adicionar a si mesmo.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            return
+
+        conn = obter_conexao()
+        c = conn.cursor()
+        c.execute("SELECT * FROM usuarios WHERE nome = ?", (target_f,))
+        user_exists = c.fetchone() is not None
+        
+        if user_exists:
+            if action == "add":
+                c.execute("SELECT * FROM amizades WHERE usuario1 = ? AND usuario2 = ?", (nome, target_f))
+                if c.fetchone():
+                    enviar_json(cliente_socket, {
+                        "type": "chat_message",
+                        "room": "#geral",
+                        "sender": "[Servidor]",
+                        "sender_color": "#000000",
+                        "content": f"Você e {target_f} já são amigos.",
+                        "is_system": True,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                else:
+                    c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (target_f, nome))
+                    if c.fetchone():
+                        try:
+                            c.execute("INSERT INTO amizades VALUES (?, ?)", (nome, target_f))
+                            c.execute("INSERT INTO amizades VALUES (?, ?)", (target_f, nome))
+                            c.execute("DELETE FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (target_f, nome))
+                            conn.commit()
+                            
+                            # Notifica ambos
+                            enviar_json(cliente_socket, {
+                                "type": "chat_message",
+                                "room": "#geral",
+                                "sender": "[Servidor]",
+                                "sender_color": "#000000",
+                                "content": f"Você aceitou a solicitação de amizade de {target_f}!",
+                                "is_system": True,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            
+                            # Envia o delta de amigo adicionado
+                            enviar_json(cliente_socket, {
+                                "type": "friend_added",
+                                "friend": {"name": target_f, "online": True, "status": "Online", "color": "#000000"} # placeholder provisório
+                            })
+                            
+                            # Se o amigo estiver online, busca dados reais
+                            amigo_status = "Online"
+                            amigo_cor = "#000000"
+                            amigo_online = False
+                            with clientes_lock:
+                                for c_inf in clientes_conectados.values():
+                                    if c_inf['nome'] == target_f:
+                                        amigo_status = c_inf['status']
+                                        amigo_cor = c_inf['cor']
+                                        amigo_online = True
+                                        break
+                                        
+                            _, cor, status, _ = obter_info_cliente(cliente_socket)
+                            enviar_para_usuario(target_f, {
+                                "type": "friend_added",
+                                "friend": {"name": nome, "online": True, "status": status, "color": cor}
+                            })
+                            
+                            # Atualiza a UI do remetente com os dados reais
+                            enviar_json(cliente_socket, {
+                                "type": "friend_added",
+                                "friend": {"name": target_f, "online": amigo_online, "status": amigo_status, "color": amigo_cor}
+                            })
+                        except sqlite3.IntegrityError:
+                            pass
+                    else:
+                        c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (nome, target_f))
+                        if c.fetchone():
+                            enviar_json(cliente_socket, {
+                                "type": "chat_message",
+                                "room": "#geral",
+                                "sender": "[Servidor]",
+                                "sender_color": "#000000",
+                                "content": f"Você já enviou um convite de amizade para {target_f} e está pendente.",
+                                "is_system": True,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                        else:
+                            c.execute("INSERT INTO solicitacoes_amizade VALUES (?, ?)", (nome, target_f))
+                            conn.commit()
+                            enviar_json(cliente_socket, {
+                                "type": "chat_message",
+                                "room": "#geral",
+                                "sender": "[Servidor]",
+                                "sender_color": "#000000",
+                                "content": f"Solicitação de amizade enviada para {target_f}.",
+                                "is_system": True,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            
+                            enviar_para_usuario(target_f, {
+                                "type": "friend_request",
+                                "from": nome
+                            })
+            elif action == "remove":
+                c.execute("DELETE FROM amizades WHERE (usuario1 = ? AND usuario2 = ?) OR (usuario1 = ? AND usuario2 = ?)",
+                          (nome, target_f, target_f, nome))
+                conn.commit()
+                enviar_json(cliente_socket, {
+                    "type": "friend_removed",
+                    "username": target_f
+                })
+                enviar_para_usuario(target_f, {
+                    "type": "friend_removed",
+                    "username": nome
+                })
+        else:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": "#geral",
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": f"Erro: O usuário '{target_f}' não existe.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+        conn.close()
+
+def tratar_friend_response(cliente_socket, nome, dados):
+    remetente_req = sanitizar_string(dados.get("from", ""))
+    aceito = dados.get("accept", False)
+    
+    if remetente_req:
+        conn = obter_conexao()
+        c = conn.cursor()
+        
+        c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (remetente_req, nome))
+        if c.fetchone():
+            c.execute("DELETE FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (remetente_req, nome))
+            
+            if aceito:
+                try:
+                    c.execute("INSERT INTO amizades VALUES (?, ?)", (remetente_req, nome))
+                    c.execute("INSERT INTO amizades VALUES (?, ?)", (nome, remetente_req))
+                    conn.commit()
+                    
+                    # Busca status atual do amigo se ele estiver conectado
+                    am_online = False
+                    am_status = "Offline"
+                    am_cor = "#000000"
+                    with clientes_lock:
+                        for c_inf in clientes_conectados.values():
+                            if c_inf['nome'] == remetente_req:
+                                am_online = True
+                                am_status = c_inf['status']
+                                am_cor = c_inf['cor']
+                                break
+                                
+                    _, cor, status, _ = obter_info_cliente(cliente_socket)
+                    enviar_para_usuario(remetente_req, {
+                        "type": "friend_added",
+                        "friend": {"name": nome, "online": True, "status": status, "color": cor}
+                    })
+                    
+                    enviar_json(cliente_socket, {
+                        "type": "friend_added",
+                        "friend": {"name": remetente_req, "online": am_online, "status": am_status, "color": am_cor}
+                    })
+                except sqlite3.IntegrityError:
+                    pass
+            else:
+                conn.commit()
+                enviar_json(cliente_socket, {
+                    "type": "friend_request_declined",
+                    "from": remetente_req
+                })
+        conn.close()
+
+def tratar_moderation_action(cliente_socket, nome, dados):
+    _, _, _, role = obter_info_cliente(cliente_socket)
+    action = dados.get("action")
+    target_m = sanitizar_string(dados.get("username", ""))
+    sala_alvo = sanitizar_string(dados.get("room", "#geral"))
+    
+    if not sala_alvo.startswith('@'):
+        conn = obter_conexao()
+        c = conn.cursor()
+        
+        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_alvo,))
+        row_m = c.fetchone()
+        
+        e_admin = (role == "admin")
+        e_dono = (row_m and row_m[0] == nome)
+        
+        if sala_alvo == "#geral" and not e_admin:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": sala_alvo,
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": "Não é permitido moderar a sala principal #geral.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+        elif e_dono or e_admin:
+            if action == "kick":
+                sock_alvo = None
+                with clientes_lock:
+                    for s, info_c in clientes_conectados.items():
+                        if info_c['nome'] == target_m and sala_alvo in info_c['salas']:
+                            sock_alvo = s
+                            break
+                if sock_alvo:
+                    # Remove a sala do set do cliente chutado
+                    with clientes_lock:
+                        if sock_alvo in clientes_conectados:
+                            clientes_conectados[sock_alvo]['salas'].discard(sala_alvo)
+                            clientes_conectados[sock_alvo]['salas'].add("#geral")
+                        
+                    enviar_json(sock_alvo, {
+                        "type": "chat_message",
+                        "room": sala_alvo,
+                        "sender": "[Servidor]",
+                        "sender_color": "#000000",
+                        "content": f"Você foi expulso (kick) da sala {sala_alvo} pelo proprietário ou administrador.",
+                        "is_system": True,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                    enviar_json(sock_alvo, {
+                        "type": "force_join",
+                        "room": "#geral",
+                        "from_room": sala_alvo
+                    })
+                    # Notifica a sala
+                    broadcast_incremental({
+                        "type": "user_left",
+                        "room": sala_alvo,
+                        "username": target_m
+                    }, sala_alvo=sala_alvo)
+                    
+                    contagem = obter_contagem_sala(sala_alvo)
+                    broadcast_incremental({
+                        "type": "room_count_update",
+                        "room": sala_alvo,
+                        "count": contagem
+                    })
+            elif action == "ban":
+                if target_m == nome:
+                    enviar_json(cliente_socket, {
+                        "type": "chat_message",
+                        "room": sala_alvo,
+                        "sender": "[Servidor]",
+                        "sender_color": "#000000",
+                        "content": "Você não pode banir a si mesmo.",
+                        "is_system": True,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                else:
+                    try:
+                        c.execute("INSERT INTO banimentos VALUES (?, ?)", (sala_alvo, target_m))
+                        conn.commit()
+                        
+                        sock_alvo = None
+                        with clientes_lock:
+                            for s, info_c in clientes_conectados.items():
+                                if info_c['nome'] == target_m and sala_alvo in info_c['salas']:
+                                    sock_alvo = s
+                                    break
+                        if sock_alvo:
+                            with clientes_lock:
+                                if sock_alvo in clientes_conectados:
+                                    clientes_conectados[sock_alvo]['salas'].discard(sala_alvo)
+                                    clientes_conectados[sock_alvo]['salas'].add("#geral")
+                            enviar_json(sock_alvo, {
+                                "type": "chat_message",
+                                "room": sala_alvo,
+                                "sender": "[Servidor]",
+                                "sender_color": "#000000",
+                                "content": f"Você foi BANIDO da sala {sala_alvo} pelo proprietário ou administrador.",
+                                "is_system": True,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            enviar_json(sock_alvo, {
+                                "type": "force_join",
+                                "room": "#geral",
+                                "from_room": sala_alvo
+                            })
+                            
+                            broadcast_incremental({
+                                "type": "user_left",
+                                "room": sala_alvo,
+                                "username": target_m
+                            }, sala_alvo=sala_alvo)
+                            
+                            contagem = obter_contagem_sala(sala_alvo)
+                            broadcast_incremental({
+                                "type": "room_count_update",
+                                "room": sala_alvo,
+                                "count": contagem
+                            })
+                        enviar_json(cliente_socket, {
+                            "type": "chat_message",
+                            "room": sala_alvo,
+                            "sender": "[Servidor]",
+                            "sender_color": "#000000",
+                            "content": f"O usuário {target_m} foi banido da sala {sala_alvo}.",
+                            "is_system": True,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                    except sqlite3.IntegrityError:
+                        pass
+            elif action == "unban":
+                c.execute("DELETE FROM banimentos WHERE sala = ? AND usuario = ?", (sala_alvo, target_m))
+                conn.commit()
+                enviar_json(cliente_socket, {
+                    "type": "chat_message",
+                    "room": sala_alvo,
+                    "sender": "[Servidor]",
+                    "sender_color": "#000000",
+                    "content": f"O usuário {target_m} foi desbanido da sala {sala_alvo}.",
+                    "is_system": True,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                 })
+            elif action == "set_password":
+                nova_senha = sanitizar_string(dados.get("password", ""))
+                c.execute("UPDATE salas_config SET senha = ? WHERE sala = ?", (nova_senha if nova_senha else None, sala_alvo))
+                conn.commit()
+                enviar_json(cliente_socket, {
+                    "type": "chat_message",
+                    "room": sala_alvo,
+                    "sender": "[Servidor]",
+                    "sender_color": "#000000",
+                    "content": f"A senha da sala {sala_alvo} foi alterada." if nova_senha else f"A senha da sala {sala_alvo} foi removida.",
+                    "is_system": True,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                # Avisa todos sobre a alteração de proteção
+                broadcast_incremental({
+                    "type": "room_protection_changed",
+                    "room": sala_alvo,
+                    "protected": True if nova_senha else False
+                })
+        else:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": sala_alvo,
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": "Apenas o dono da sala ou o admin pode executar comandos de moderação.",
+                "is_system": True,
+            })
+        conn.close()
+
+def tratar_delete_room(cliente_socket, nome, dados):
+    _, _, _, role = obter_info_cliente(cliente_socket)
+    sala_a_deletar = sanitizar_string(dados.get("room", ""))
+    if sala_a_deletar and sala_a_deletar != "#geral" and not sala_a_deletar.startswith('@'):
+        conn = obter_conexao()
+        c = conn.cursor()
+        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_a_deletar,))
+        row_s = c.fetchone()
+        
+        e_admin = (role == "admin")
+        e_dono = (row_s and row_s[0] == nome)
+        
+        if e_dono or e_admin:
+            c.execute("DELETE FROM salas_config WHERE sala = ?", (sala_a_deletar,))
+            c.execute("DELETE FROM banimentos WHERE sala = ?", (sala_a_deletar,))
+            c.execute("DELETE FROM historico WHERE sala = ?", (sala_a_deletar,))
+            conn.commit()
+            conn.close()
+            
+            # Forçar todos os membros conectados na sala deletada a ir para o #geral
+            with clientes_lock:
+                lista_clientes = list(clientes_conectados.items())
+                
+            for sock, info_c in lista_clientes:
+                if sala_a_deletar in info_c['salas']:
+                    with clientes_lock:
+                        if sock in clientes_conectados:
+                            info_c['salas'].discard(sala_a_deletar)
+                            info_c['salas'].add("#geral")
+                    enviar_json(sock, {
+                        "type": "chat_message",
+                        "room": sala_a_deletar,
+                        "sender": "[Servidor]",
+                        "sender_color": "#000000",
+                        "content": f"A sala {sala_a_deletar} foi excluída pelo proprietário ou administrador.",
+                        "is_system": True,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                    enviar_json(sock, {
+                        "type": "force_join",
+                        "room": "#geral",
+                        "from_room": sala_a_deletar
+                    })
+                    
+            # Notificar TODOS os clientes para remover a sala do explorador
+            broadcast_incremental({
+                "type": "room_deleted",
+                "room": sala_a_deletar
+            })
+        else:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": "#geral",
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": "Erro: Você não tem permissão para excluir esta sala.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            conn.close()
+
+def tratar_create_room(cliente_socket, nome, dados):
+    nova_sala = sanitizar_string(dados.get("room", ""))
+    senha_fornecida = sanitizar_string(dados.get("password", ""))
+    if not nova_sala or nova_sala.startswith('@'):
+        enviar_json(cliente_socket, {
+            "type": "create_room_response",
+            "status": "error",
+            "message": "Nome de sala inválido."
+        })
+        return
+    if not nova_sala.startswith('#'):
+        nova_sala = "#" + nova_sala
+        
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("SELECT * FROM salas_config WHERE sala = ?", (nova_sala,))
+    if c.fetchone():
+        enviar_json(cliente_socket, {
+            "type": "create_room_response",
+            "status": "error",
+            "message": "Esta sala já existe."
+        })
+    else:
+        senha_val = senha_fornecida if senha_fornecida else None
+        c.execute("INSERT INTO salas_config VALUES (?, ?, ?)", (nova_sala, nome, senha_val))
+        conn.commit()
+        
+        enviar_json(cliente_socket, {
+            "type": "create_room_response",
+            "status": "success",
+            "room": nova_sala
+        })
+        
+        # Notifica a todos os usuários sobre a nova sala no explorador
+        broadcast_incremental({
+            "type": "room_created",
+            "room": nova_sala,
+            "protected": True if senha_val else False
+        })
+    conn.close()
+
+def tratar_get_banned_users(cliente_socket, nome, dados):
+    _, _, _, role = obter_info_cliente(cliente_socket)
+    sala_m = sanitizar_string(dados.get("room", ""))
+    if sala_m:
+        conn = obter_conexao()
+        c = conn.cursor()
+        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_m,))
+        row_m = c.fetchone()
+        e_admin = (role == "admin")
+        e_dono = (row_m and row_m[0] == nome)
+        
+        if e_dono or e_admin:
+            c.execute("SELECT usuario FROM banimentos WHERE sala = ?", (sala_m,))
+            banned = [r[0] for r in c.fetchall()]
+            enviar_json(cliente_socket, {
+                "type": "banned_users_list",
+                "room": sala_m,
+                "users": banned
+            })
+        conn.close()
+
+def tratar_nudge(cliente_socket, nome, dados):
+    destinatario = sanitizar_string(dados.get("to", ""))
+    sala_msg = sanitizar_string(dados.get("room", "#geral"))
+    if destinatario:
+        encontrado = enviar_para_usuario(destinatario, {"type": "nudge", "from": nome, "room": sala_msg})
+        if encontrado:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": sala_msg,
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": f"Você chamou a atenção de {destinatario}.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+        else:
+            enviar_json(cliente_socket, {
+                "type": "chat_message",
+                "room": sala_msg,
+                "sender": "[Servidor]",
+                "sender_color": "#000000",
+                "content": f"O usuário {destinatario} não está online.",
+                "is_system": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+def tratar_file_transfer(cliente_socket, dados):
+    tipo = dados.get("type")
+    room = sanitizar_string(dados.get("room", "#geral"))
+    if room.startswith('@'):
+        destinatario = room.replace("@", "", 1)
+        enviar_para_usuario(destinatario, dados)
+    else:
+        broadcast_incremental(dados, sala_alvo=room, exceto_socket=cliente_socket)
+    
+    if tipo == "file_end":
+        nome = obter_info_cliente(cliente_socket)[0]
+        filename = sanitizar_string(dados.get("filename", "Arquivo"))
+        salvar_mensagem(room, nome, f"[FILE_SHARE_NOTIFICATION]:{filename}")
+
+def tratar_file_share(cliente_socket, nome, dados):
+    _, cor, _, role = obter_info_cliente(cliente_socket)
+    filename = sanitizar_string(dados.get("filename", ""))
+    file_data = dados.get("data", "")
+    room_share = sanitizar_string(dados.get("room", "#geral"))
+    
+    if file_data and len(file_data) > 1.5 * 1024 * 1024:
+        enviar_json(cliente_socket, {
+            "type": "chat_message",
+            "room": room_share,
+            "sender": "[Servidor]",
+            "sender_color": "#000000",
+            "content": "Erro: O arquivo enviado excede o limite permitido de 1MB.",
+            "is_system": True,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        return
+    if filename and file_data:
+        if room_share.startswith('@'):
+            destinatario = room_share.replace("@", "", 1)
+            sala_dm = obter_sala_dm(nome, destinatario)
+            salvar_mensagem(sala_dm, nome, f"[FILE_SHARE]:{filename}:{file_data}")
+            
+            payload_rem = {
+                "type": "file_share",
+                "room": f"@{destinatario}",
+                "sender": nome,
+                "sender_color": cor,
+                "filename": filename,
+                "data": file_data,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            enviar_json(cliente_socket, payload_rem)
+            enviar_para_usuario(destinatario, {
+                "type": "file_share",
+                "room": f"@{nome}",
+                "sender": nome,
+                "sender_color": cor,
+                "filename": filename,
+                "data": file_data,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+        else:
+            salvar_mensagem(room_share, nome, f"[FILE_SHARE]:{filename}:{file_data}")
+            
+            dono_sala = "admin"
+            try:
+                conn_fs = obter_conexao()
+                c_fs = conn_fs.cursor()
+                c_fs.execute("SELECT dono FROM salas_config WHERE sala = ?", (room_share,))
+                row_fs = c_fs.fetchone()
+                if row_fs:
+                    dono_sala = row_fs[0]
+                conn_fs.close()
+            except sqlite3.Error:
+                pass
+                
+            badge_val = ""
+            if role == 'admin':
+                badge_val = "⭐ Admin"
+            elif nome == dono_sala:
+                badge_val = "👑 Dono"
+
+            broadcast_incremental({
+                "type": "file_share",
+                "room": room_share,
+                "sender": nome,
+                "sender_color": cor,
+                "filename": filename,
+                "data": file_data,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "badge": badge_val
+            }, sala_alvo=room_share)
+
+def tratar_search_history(cliente_socket, nome, dados):
+    query_t = sanitizar_string(dados.get("query", ""))
+    if query_t:
+        conn = obter_conexao()
+        c = conn.cursor()
+        c.execute("""
+            SELECT sala, remetente, mensagem, data 
+            FROM historico 
+            WHERE mensagem LIKE ? 
+              AND (sala NOT LIKE '@%' OR sala LIKE ? OR sala LIKE ?)
+            ORDER BY rowid DESC LIMIT 50
+        """, (f"%{query_t}%", f"%@{nome}:%", f"%:{nome}%"))
+        rows = c.fetchall()
+        conn.close()
+        
+        results = []
+        for r in rows:
+            results.append({
+                "room": r[0],
+                "sender": r[1],
+                "content": r[2],
+                "timestamp": r[3]
+            })
+            
+        enviar_json(cliente_socket, {
+            "type": "search_results",
+            "query": query_t,
+            "results": results
+        })
+
+def tratar_help(cliente_socket, dados):
+    ajuda = (
+        "\n📋 **GUIA DE COMANDOS DO CHATPY**\n\n"
+        "💬 **Mensagens e Interação:**\n"
+        "• `/msg <usuario> <texto>` : Envia uma mensagem privada (DM).\n"
+        "• `/chamar` : Chama a atenção na DM (faz a janela tremer).\n"
+        "• `/chamar <usuario>` : Chama a atenção de um usuário na sala atual.\n"
+        "• `/roll` : Rola um dado de 1 a 100.\n"
+        "• `/coinflip` : Joga uma moeda (Cara ou Coroa).\n\n"
+        "👥 **Amizades:**\n"
+        "• `/friend add <usuario>` : Envia ou aceita convite de amizade.\n"
+        "• `/friend remove <usuario>` : Remove um usuário da sua lista de amigos.\n\n"
+        "🛡️ **Moderação (Apenas Dono da Sala ou Admin):**\n"
+        "• `/kick <usuario>` : Expulsa temporariamente o usuário da sala.\n"
+        "• `/ban <usuario>` : Bane permanentemente o usuário da sala.\n"
+        "• `/unban <usuario>` : Remove o banimento do usuário da sala.\n"
+        "• `/setpass <senha>` : Define uma senha para a sala (em branco para remover).\n\n"
+        "💡 **Atalhos Úteis (Interface):**\n"
+        "• **Clique Duplo** em uma aba para reabrir/focar nela.\n"
+        "• **Clique com Botão Direito** nas abas ou lista de salas para opções rápidas (Fixar, Fechar, Excluir).\n"
+        "• **Arrastar e Soltar (Drag & Drop)** arquivos na tela do chat para compartilhá-los.\n"
+    )
+    enviar_json(cliente_socket, {
+        "type": "chat_message",
+        "room": dados.get("room", "#geral"),
+        "sender": "[Servidor]",
+        "sender_color": "#000000",
+        "content": ajuda,
+        "is_system": True,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+
+def tratar_request_state(cliente_socket, nome):
+    empurrar_estado_inicial(cliente_socket, nome)
+
+def tratar_msg(cliente_socket, nome, dados):
+    texto = sanitizar_string(dados.get("content", ""))
+    sala_dest = sanitizar_string(dados.get("room", "#geral"))
+    
+    with clientes_lock:
+        if cliente_socket in clientes_conectados:
+            pode_falar = (sala_dest in clientes_conectados[cliente_socket]['salas'])
+        else:
+            pode_falar = False
+        
+    if texto and pode_falar:
+        if texto == "/roll":
+            resultado = random.randint(1, 100)
+            resposta_bot = f"[Bot]: {nome} rolou e tirou {resultado} (1-100)."
+            salvar_mensagem(sala_dest, "[Bot]", resposta_bot)
+            transmitir(resposta_bot, sala_dest, remetente_socket=None, remetente_nome="[Bot]", is_sistema=True)
+        elif texto == "/coinflip":
+            resultado = random.choice(["Cara", "Coroa"])
+            resposta_bot = f"[Bot]: {nome} lançou uma moeda e deu {resultado}."
+            salvar_mensagem(sala_dest, "[Bot]", resposta_bot)
+            transmitir(resposta_bot, sala_dest, remetente_socket=None, remetente_nome="[Bot]", is_sistema=True)
+        else:
+            salvar_mensagem(sala_dest, nome, texto)
+            logging.info(f"[{sala_dest}] [{nome}]: {texto}")
+            transmitir(texto, sala_dest, cliente_socket, remetente_nome=nome, is_sistema=False)
 
 def gerenciar_cliente(cliente_socket, endereco):
     cliente_buffer = JsonSocketBuffer(cliente_socket)
@@ -612,12 +1632,13 @@ def gerenciar_cliente(cliente_socket, endereco):
         "count": contagem_inicial
     })
 
-    print(f"[*] {nome} conectou e entrou em {sala_inicial}.")
+    logging.info(f"{nome} conectou e entrou em {sala_inicial}.")
 
     while True:
         try:
             dados = cliente_buffer.receber_json()
-            if not dados: break
+            if not dados:
+                break
             
             tipo = dados.get("type")
             
@@ -657,963 +1678,48 @@ def gerenciar_cliente(cliente_socket, endereco):
                     continue
             
             if tipo == "join":
-                nova_sala = sanitizar_string(dados.get("room", "#geral"))
-                senha_fornecida = sanitizar_string(dados.get("password", ""))
-                
-                is_dm = nova_sala.startswith('@')
-                
-                if not is_dm:
-                    if not nova_sala.startswith('#'):
-                        nova_sala = "#" + nova_sala
-                    
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    
-                    # 1. Verifica se está banido
-                    c.execute("SELECT * FROM banimentos WHERE sala = ? AND usuario = ?", (nova_sala, nome))
-                    if c.fetchone():
-                        enviar_json(cliente_socket, {
-                            "type": "join_response",
-                            "status": "error",
-                            "room": nova_sala,
-                            "message": "Você está banido desta sala."
-                        })
-                        conn.close()
-                        continue
-                        
-                    # 2. Verifica se exige senha
-                    c.execute("SELECT dono, senha FROM salas_config WHERE sala = ?", (nova_sala,))
-                    row_s = c.fetchone()
-                    if row_s:
-                        dono, senha_db = row_s[0], row_s[1]
-                        if senha_db and senha_db != senha_fornecida:
-                            if not senha_fornecida:
-                                enviar_json(cliente_socket, {
-                                    "type": "join_password_required",
-                                    "room": nova_sala
-                                })
-                            else:
-                                enviar_json(cliente_socket, {
-                                    "type": "join_response",
-                                    "status": "error",
-                                    "room": nova_sala,
-                                    "message": "Senha incorreta para a sala."
-                                })
-                            conn.close()
-                            continue
-                    else:
-                        enviar_json(cliente_socket, {
-                            "type": "join_response",
-                            "status": "error",
-                            "room": nova_sala,
-                            "message": "Esta sala não existe. Use o botão 'Criar Nova Sala' para criá-la."
-                        })
-                        conn.close()
-                        continue
-                    conn.close()
-
-                # Adiciona a nova sala à lista de salas ativas do cliente (Múltiplas salas)
-                ja_inscrito = False
-                with clientes_lock:
-                    if nova_sala in clientes_conectados[cliente_socket]['salas']:
-                        ja_inscrito = True
-                    else:
-                        clientes_conectados[cliente_socket]['salas'].add(nova_sala)
-                
-                # Resposta de sucesso de entrada
-                enviar_json(cliente_socket, {
-                    "type": "join_response",
-                    "status": "success",
-                    "room": nova_sala
-                })
-
-                if not ja_inscrito:
-                    # Notifica os outros membros sobre a entrada
-                    dono_sala = "admin"
-                    if not is_dm:
-                        conn = obter_conexao()
-                        c = conn.cursor()
-                        c.execute("SELECT dono FROM salas_config WHERE sala = ?", (nova_sala,))
-                        row_d = c.fetchone()
-                        if row_d:
-                            dono_sala = row_d[0]
-                        conn.close()
-                    
-                    badge_val = ""
-                    if role == 'admin':
-                        badge_val = "⭐ Admin"
-                    elif nome == dono_sala:
-                        badge_val = "👑 Dono"
-
-                    broadcast_incremental({
-                        "type": "user_joined",
-                        "room": nova_sala,
-                        "user": {
-                            "name": nome,
-                            "color": cor,
-                            "status": status,
-                            "badge": badge_val
-                        }
-                    }, sala_alvo=nova_sala, exceto_socket=cliente_socket)
-                    
-                    # Atualiza a contagem da sala
-                    contagem = obter_contagem_sala(nova_sala)
-                    broadcast_incremental({
-                        "type": "room_count_update",
-                        "room": nova_sala,
-                        "count": contagem
-                    })
-                
-                # Envia o histórico da sala para o cliente
-                if is_dm:
-                    dest_dm = nova_sala[1:]
-                    sala_dm = obter_sala_dm(nome, dest_dm)
-                    historico = buscar_historico(sala_dm)
-                else:
-                    historico = buscar_historico(nova_sala)
-                    
-                # Envia o dono atual da sala para atualizar os cargos na UI
-                dono_sala = "admin"
-                if not is_dm:
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    c.execute("SELECT dono FROM salas_config WHERE sala = ?", (nova_sala,))
-                    row_d = c.fetchone()
-                    if row_d:
-                        dono_sala = row_d[0]
-                    conn.close()
-
-                if historico:
-                    msgs_envio = []
-                    for msg in historico:
-                        h_data, h_remetente, h_msg, h_cor, h_role = msg[0], msg[1], msg[2], msg[3], msg[4]
-                        h_badge = ""
-                        if not is_dm:
-                            if h_role == 'admin':
-                                h_badge = "⭐ Admin"
-                            elif h_remetente == dono_sala:
-                                h_badge = "👑 Dono"
-                        msgs_envio.append({
-                            "timestamp": h_data,
-                            "sender": h_remetente,
-                            "content": h_msg,
-                            "sender_color": h_cor if h_cor else "#000000",
-                            "badge": h_badge
-                        })
-                    enviar_json(cliente_socket, {
-                        "type": "history",
-                        "room": nova_sala,
-                        "messages": msgs_envio
-                    })
-                    
-                usuarios_sala_lista = []
-                with clientes_lock:
-                    for c_info in clientes_conectados.values():
-                        if nova_sala in c_info['salas']:
-                            badge_val = ""
-                            if c_info.get('role') == 'admin':
-                                badge_val = "⭐ Admin"
-                            elif c_info['nome'] == dono_sala:
-                                badge_val = "👑 Dono"
-                            usuarios_sala_lista.append({
-                                "name": c_info['nome'],
-                                "color": c_info['cor'],
-                                "status": c_info['status'],
-                                "badge": badge_val
-                            })
-
-                enviar_json(cliente_socket, {
-                    "type": "state_update_room",
-                    "room": nova_sala,
-                    "room_owner": dono_sala,
-                    "users": usuarios_sala_lista
-                })
-
+                tratar_join(cliente_socket, nome, dados)
             elif tipo == "leave":
-                # Cliente fecha aba / sai da sala
-                sala_a_sair = sanitizar_string(dados.get("room", ""))
-                if sala_a_sair and sala_a_sair != "#geral":
-                    removida = False
-                    with clientes_lock:
-                        if sala_a_sair in clientes_conectados[cliente_socket]['salas']:
-                            clientes_conectados[cliente_socket]['salas'].discard(sala_a_sair)
-                            removida = True
-                    
-                    if removida:
-                        # Notifica membros restantes
-                        broadcast_incremental({
-                            "type": "user_left",
-                            "room": sala_a_sair,
-                            "username": nome
-                        }, sala_alvo=sala_a_sair)
-                        
-                        # Atualiza a contagem da sala
-                        contagem = obter_contagem_sala(sala_a_sair)
-                        broadcast_incremental({
-                            "type": "room_count_update",
-                            "room": sala_a_sair,
-                            "count": contagem
-                        })
-                        
+                tratar_leave(cliente_socket, nome, dados)
             elif tipo == "private_msg":
-                destinatario = sanitizar_string(dados.get("to", ""))
-                conteudo = sanitizar_string(dados.get("content", ""))
-                if destinatario and conteudo:
-                    enviar_privado(nome, destinatario, conteudo, cliente_socket)
-                    
+                tratar_private_msg(cliente_socket, nome, dados)
             elif tipo == "typing":
-                status_d = dados.get("status", False)
-                sala_typing = sanitizar_string(dados.get("room", "#geral"))
-                
-                broadcast_incremental({
-                    "type": "typing_status",
-                    "user": nome,
-                    "room": sala_typing,
-                    "status": status_d
-                }, sala_alvo=sala_typing, exceto_socket=cliente_socket)
-                        
+                tratar_typing(cliente_socket, nome, dados)
             elif tipo == "set_color":
-                cor_d = sanitizar_string(dados.get("color", "#000000"))
-                with clientes_lock:
-                    clientes_conectados[cliente_socket]['cor'] = cor_d
-                
-                conn = obter_conexao()
-                c = conn.cursor()
-                c.execute("UPDATE usuarios SET cor = ? WHERE nome = ?", (cor_d, nome))
-                conn.commit()
-                conn.close()
-                
-                # Delta de cor enviado apenas a quem compartilha as mesmas salas
-                with clientes_lock:
-                    salas_usuario = clientes_conectados[cliente_socket]['salas']
-                for s in salas_usuario:
-                    broadcast_incremental({
-                        "type": "user_color_changed",
-                        "username": nome,
-                        "room": s,
-                        "color": cor_d
-                    }, sala_alvo=s)
-                
+                tratar_set_color(cliente_socket, nome, dados)
             elif tipo == "set_status":
-                status_d = sanitizar_string(dados.get("status", "Online"))
-                with clientes_lock:
-                    clientes_conectados[cliente_socket]['status'] = status_d
-                
-                conn = obter_conexao()
-                c = conn.cursor()
-                c.execute("UPDATE usuarios SET status = ? WHERE nome = ?", (status_d, nome))
-                conn.commit()
-                conn.close()
-                
-                # Delta de status enviado para todas as salas do usuário
-                with clientes_lock:
-                    salas_usuario = list(clientes_conectados[cliente_socket]['salas'])
-                for s in salas_usuario:
-                    broadcast_incremental({
-                        "type": "user_status_changed",
-                        "username": nome,
-                        "room": s,
-                        "status": status_d
-                    }, sala_alvo=s)
-
-                # Atualiza também na lista dos amigos do usuário
-                # (amigos recebem de forma assíncrona se estiverem conectados)
-                conn = obter_conexao()
-                c = conn.cursor()
-                c.execute("SELECT usuario1 FROM amizades WHERE usuario2 = ?", (nome,))
-                amigos_nomes = [r[0] for r in c.fetchall()]
-                conn.close()
-                
-                for am_nome in amigos_nomes:
-                    enviar_para_usuario(am_nome, {
-                        "type": "friend_status_update",
-                        "name": nome,
-                        "status": status_d,
-                        "online": True,
-                        "color": cor
-                    })
-                
+                tratar_set_status(cliente_socket, nome, dados)
             elif tipo == "friend_action":
-                action = dados.get("action")
-                target_f = sanitizar_string(dados.get("username", ""))
-                
-                if target_f:
-                    if target_f == nome:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": "#geral",
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": "Você não pode adicionar a si mesmo.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                        continue
-
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    c.execute("SELECT * FROM usuarios WHERE nome = ?", (target_f,))
-                    user_exists = c.fetchone() is not None
-                    
-                    if user_exists:
-                        if action == "add":
-                            c.execute("SELECT * FROM amizades WHERE usuario1 = ? AND usuario2 = ?", (nome, target_f))
-                            if c.fetchone():
-                                enviar_json(cliente_socket, {
-                                    "type": "chat_message",
-                                    "room": "#geral",
-                                    "sender": "[Servidor]",
-                                    "sender_color": "#000000",
-                                    "content": f"Você e {target_f} já são amigos.",
-                                    "is_system": True,
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                            else:
-                                c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (target_f, nome))
-                                if c.fetchone():
-                                    try:
-                                        c.execute("INSERT INTO amizades VALUES (?, ?)", (nome, target_f))
-                                        c.execute("INSERT INTO amizades VALUES (?, ?)", (target_f, nome))
-                                        c.execute("DELETE FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (target_f, nome))
-                                        conn.commit()
-                                        
-                                        # Notifica ambos
-                                        enviar_json(cliente_socket, {
-                                            "type": "chat_message",
-                                            "room": "#geral",
-                                            "sender": "[Servidor]",
-                                            "sender_color": "#000000",
-                                            "content": f"Você aceitou a solicitação de amizade de {target_f}!",
-                                            "is_system": True,
-                                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        })
-                                        
-                                        # Envia o delta de amigo adicionado
-                                        enviar_json(cliente_socket, {
-                                            "type": "friend_added",
-                                            "friend": {"name": target_f, "online": True, "status": "Online", "color": "#000000"} # placeholder provisório
-                                        })
-                                        
-                                        # Se o amigo estiver online, busca dados reais
-                                        amigo_status = "Online"
-                                        amigo_cor = "#000000"
-                                        amigo_online = False
-                                        with clientes_lock:
-                                            for c_inf in clientes_conectados.values():
-                                                if c_inf['nome'] == target_f:
-                                                    amigo_status = c_inf['status']
-                                                    amigo_cor = c_inf['cor']
-                                                    amigo_online = True
-                                                    break
-                                                    
-                                        enviar_para_usuario(target_f, {
-                                            "type": "friend_added",
-                                            "friend": {"name": nome, "online": True, "status": status, "color": cor}
-                                        })
-                                        
-                                        # Atualiza a UI do remetente com os dados reais
-                                        enviar_json(cliente_socket, {
-                                            "type": "friend_added",
-                                            "friend": {"name": target_f, "online": amigo_online, "status": amigo_status, "color": amigo_cor}
-                                        })
-                                    except sqlite3.IntegrityError:
-                                        pass
-                                else:
-                                    c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (nome, target_f))
-                                    if c.fetchone():
-                                        enviar_json(cliente_socket, {
-                                            "type": "chat_message",
-                                            "room": "#geral",
-                                            "sender": "[Servidor]",
-                                            "sender_color": "#000000",
-                                            "content": f"Você já enviou um convite de amizade para {target_f} e está pendente.",
-                                            "is_system": True,
-                                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        })
-                                    else:
-                                        c.execute("INSERT INTO solicitacoes_amizade VALUES (?, ?)", (nome, target_f))
-                                        conn.commit()
-                                        enviar_json(cliente_socket, {
-                                            "type": "chat_message",
-                                            "room": "#geral",
-                                            "sender": "[Servidor]",
-                                            "sender_color": "#000000",
-                                            "content": f"Solicitação de amizade enviada para {target_f}.",
-                                            "is_system": True,
-                                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        })
-                                        
-                                        enviar_para_usuario(target_f, {
-                                            "type": "friend_request",
-                                            "from": nome
-                                        })
-                        elif action == "remove":
-                            c.execute("DELETE FROM amizades WHERE (usuario1 = ? AND usuario2 = ?) OR (usuario1 = ? AND usuario2 = ?)",
-                                      (nome, target_f, target_f, nome))
-                            conn.commit()
-                            enviar_json(cliente_socket, {
-                                "type": "friend_removed",
-                                "username": target_f
-                            })
-                            enviar_para_usuario(target_f, {
-                                "type": "friend_removed",
-                                "username": nome
-                            })
-                    else:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": "#geral",
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": f"Erro: O usuário '{target_f}' não existe.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                    conn.close()
-            
+                tratar_friend_action(cliente_socket, nome, dados)
             elif tipo == "friend_response":
-                remetente_req = sanitizar_string(dados.get("from", ""))
-                aceito = dados.get("accept", False)
-                
-                if remetente_req:
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    
-                    c.execute("SELECT * FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (remetente_req, nome))
-                    if c.fetchone():
-                        c.execute("DELETE FROM solicitacoes_amizade WHERE remetente = ? AND destinatario = ?", (remetente_req, nome))
-                        
-                        if aceito:
-                            try:
-                                c.execute("INSERT INTO amizades VALUES (?, ?)", (remetente_req, nome))
-                                c.execute("INSERT INTO amizades VALUES (?, ?)", (nome, remetente_req))
-                                conn.commit()
-                                
-                                # Busca status atual do amigo se ele estiver conectado
-                                am_online = False
-                                am_status = "Offline"
-                                am_cor = "#000000"
-                                with clientes_lock:
-                                    for c_inf in clientes_conectados.values():
-                                        if c_inf['nome'] == remetente_req:
-                                            am_online = True
-                                            am_status = c_inf['status']
-                                            am_cor = c_inf['cor']
-                                            break
-                                            
-                                enviar_para_usuario(remetente_req, {
-                                    "type": "friend_added",
-                                    "friend": {"name": nome, "online": True, "status": status, "color": cor}
-                                })
-                                
-                                enviar_json(cliente_socket, {
-                                    "type": "friend_added",
-                                    "friend": {"name": remetente_req, "online": am_online, "status": am_status, "color": am_cor}
-                                })
-                            except sqlite3.IntegrityError:
-                                pass
-                        else:
-                            conn.commit()
-                            enviar_json(cliente_socket, {
-                                "type": "friend_request_declined",
-                                "from": remetente_req
-                            })
-                    conn.close()
-                    
+                tratar_friend_response(cliente_socket, nome, dados)
             elif tipo == "moderation_action":
-                action = dados.get("action")
-                target_m = sanitizar_string(dados.get("username", ""))
-                sala_alvo = sanitizar_string(dados.get("room", "#geral"))
-                
-                if not sala_alvo.startswith('@'):
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    
-                    c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_alvo,))
-                    row_m = c.fetchone()
-                    
-                    e_admin = (role == "admin")
-                    e_dono = (row_m and row_m[0] == nome)
-                    
-                    if sala_alvo == "#geral" and not e_admin:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": sala_alvo,
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": "Não é permitido moderar a sala principal #geral.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                    elif e_dono or e_admin:
-                        if action == "kick":
-                            sock_alvo = None
-                            with clientes_lock:
-                                for s, info_c in clientes_conectados.items():
-                                    if info_c['nome'] == target_m and sala_alvo in info_c['salas']:
-                                        sock_alvo = s
-                                        break
-                            if sock_alvo:
-                                # Remove a sala do set do cliente chutado
-                                with clientes_lock:
-                                    clientes_conectados[sock_alvo]['salas'].discard(sala_alvo)
-                                    clientes_conectados[sock_alvo]['salas'].add("#geral")
-                                    
-                                enviar_json(sock_alvo, {
-                                    "type": "chat_message",
-                                    "room": sala_alvo,
-                                    "sender": "[Servidor]",
-                                    "sender_color": "#000000",
-                                    "content": f"Você foi expulso (kick) da sala {sala_alvo} pelo proprietário ou administrador.",
-                                    "is_system": True,
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                                enviar_json(sock_alvo, {
-                                    "type": "force_join",
-                                    "room": "#geral",
-                                    "from_room": sala_alvo
-                                })
-                                # Notifica a sala
-                                broadcast_incremental({
-                                    "type": "user_left",
-                                    "room": sala_alvo,
-                                    "username": target_m
-                                }, sala_alvo=sala_alvo)
-                                
-                                contagem = obter_contagem_sala(sala_alvo)
-                                broadcast_incremental({
-                                    "type": "room_count_update",
-                                    "room": sala_alvo,
-                                    "count": contagem
-                                })
-                        elif action == "ban":
-                            if target_m == nome:
-                                enviar_json(cliente_socket, {
-                                    "type": "chat_message",
-                                    "room": sala_alvo,
-                                    "sender": "[Servidor]",
-                                    "sender_color": "#000000",
-                                    "content": "Você não pode banir a si mesmo.",
-                                    "is_system": True,
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                            else:
-                                try:
-                                    c.execute("INSERT INTO banimentos VALUES (?, ?)", (sala_alvo, target_m))
-                                    conn.commit()
-                                    
-                                    sock_alvo = None
-                                    with clientes_lock:
-                                        for s, info_c in clientes_conectados.items():
-                                            if info_c['nome'] == target_m and sala_alvo in info_c['salas']:
-                                                sock_alvo = s
-                                                break
-                                    if sock_alvo:
-                                        with clientes_lock:
-                                            clientes_conectados[sock_alvo]['salas'].discard(sala_alvo)
-                                            clientes_conectados[sock_alvo]['salas'].add("#geral")
-                                        enviar_json(sock_alvo, {
-                                            "type": "chat_message",
-                                            "room": sala_alvo,
-                                            "sender": "[Servidor]",
-                                            "sender_color": "#000000",
-                                            "content": f"Você foi BANIDO da sala {sala_alvo} pelo proprietário ou administrador.",
-                                            "is_system": True,
-                                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        })
-                                        enviar_json(sock_alvo, {
-                                            "type": "force_join",
-                                            "room": "#geral",
-                                            "from_room": sala_alvo
-                                        })
-                                        
-                                        broadcast_incremental({
-                                            "type": "user_left",
-                                            "room": sala_alvo,
-                                            "username": target_m
-                                        }, sala_alvo=sala_alvo)
-                                        
-                                        contagem = obter_contagem_sala(sala_alvo)
-                                        broadcast_incremental({
-                                            "type": "room_count_update",
-                                            "room": sala_alvo,
-                                            "count": contagem
-                                        })
-                                    enviar_json(cliente_socket, {
-                                        "type": "chat_message",
-                                        "room": sala_alvo,
-                                        "sender": "[Servidor]",
-                                        "sender_color": "#000000",
-                                        "content": f"O usuário {target_m} foi banido da sala {sala_alvo}.",
-                                        "is_system": True,
-                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    })
-                                except sqlite3.IntegrityError:
-                                    pass
-                        elif action == "unban":
-                            c.execute("DELETE FROM banimentos WHERE sala = ? AND usuario = ?", (sala_alvo, target_m))
-                            conn.commit()
-                            enviar_json(cliente_socket, {
-                                "type": "chat_message",
-                                "room": sala_alvo,
-                                "sender": "[Servidor]",
-                                "sender_color": "#000000",
-                                "content": f"O usuário {target_m} foi desbanido da sala {sala_alvo}.",
-                                "is_system": True,
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                             })
-                        elif action == "set_password":
-                            nova_senha = sanitizar_string(dados.get("password", ""))
-                            c.execute("UPDATE salas_config SET senha = ? WHERE sala = ?", (nova_senha if nova_senha else None, sala_alvo))
-                            conn.commit()
-                            enviar_json(cliente_socket, {
-                                "type": "chat_message",
-                                "room": sala_alvo,
-                                "sender": "[Servidor]",
-                                "sender_color": "#000000",
-                                "content": f"A senha da sala {sala_alvo} foi alterada." if nova_senha else f"A senha da sala {sala_alvo} foi removida.",
-                                "is_system": True,
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            })
-                            # Avisa todos sobre a alteração de proteção
-                            broadcast_incremental({
-                                "type": "room_protection_changed",
-                                "room": sala_alvo,
-                                "protected": True if nova_senha else False
-                            })
-                    else:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": sala_alvo,
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": "Apenas o dono da sala ou o admin pode executar comandos de moderação.",
-                            "is_system": True,
-                        })
-                    conn.close()
-            
+                tratar_moderation_action(cliente_socket, nome, dados)
             elif tipo == "delete_room":
-                sala_a_deletar = sanitizar_string(dados.get("room", ""))
-                if sala_a_deletar and sala_a_deletar != "#geral" and not sala_a_deletar.startswith('@'):
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_a_deletar,))
-                    row_s = c.fetchone()
-                    
-                    e_admin = (role == "admin")
-                    e_dono = (row_s and row_s[0] == nome)
-                    
-                    if e_dono or e_admin:
-                        c.execute("DELETE FROM salas_config WHERE sala = ?", (sala_a_deletar,))
-                        c.execute("DELETE FROM banimentos WHERE sala = ?", (sala_a_deletar,))
-                        c.execute("DELETE FROM historico WHERE sala = ?", (sala_a_deletar,))
-                        conn.commit()
-                        conn.close()
-                        
-                        # Forçar todos os membros conectados na sala deletada a ir para o #geral
-                        with clientes_lock:
-                            lista_clientes = list(clientes_conectados.items())
-                            
-                        for sock, info_c in lista_clientes:
-                            if sala_a_deletar in info_c['salas']:
-                                with clientes_lock:
-                                    info_c['salas'].discard(sala_a_deletar)
-                                    info_c['salas'].add("#geral")
-                                enviar_json(sock, {
-                                    "type": "chat_message",
-                                    "room": sala_a_deletar,
-                                    "sender": "[Servidor]",
-                                    "sender_color": "#000000",
-                                    "content": f"A sala {sala_a_deletar} foi excluída pelo proprietário ou administrador.",
-                                    "is_system": True,
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                                enviar_json(sock, {
-                                    "type": "force_join",
-                                    "room": "#geral",
-                                    "from_room": sala_a_deletar
-                                })
-                                
-                        # Notificar TODOS os clientes para remover a sala do explorador
-                        broadcast_incremental({
-                            "type": "room_deleted",
-                            "room": sala_a_deletar
-                        })
-                    else:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": sala_inicial,
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": "Erro: Você não tem permissão para excluir esta sala.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                        conn.close()
-                    
+                tratar_delete_room(cliente_socket, nome, dados)
             elif tipo == "create_room":
-                nova_sala = sanitizar_string(dados.get("room", ""))
-                senha_fornecida = sanitizar_string(dados.get("password", ""))
-                if not nova_sala or nova_sala.startswith('@'):
-                    enviar_json(cliente_socket, {
-                        "type": "create_room_response",
-                        "status": "error",
-                        "message": "Nome de sala inválido."
-                    })
-                    continue
-                if not nova_sala.startswith('#'):
-                    nova_sala = "#" + nova_sala
-                    
-                conn = obter_conexao()
-                c = conn.cursor()
-                c.execute("SELECT * FROM salas_config WHERE sala = ?", (nova_sala,))
-                if c.fetchone():
-                    enviar_json(cliente_socket, {
-                        "type": "create_room_response",
-                        "status": "error",
-                        "message": "Esta sala já existe."
-                    })
-                else:
-                    senha_val = senha_fornecida if senha_fornecida else None
-                    c.execute("INSERT INTO salas_config VALUES (?, ?, ?)", (nova_sala, nome, senha_val))
-                    conn.commit()
-                    
-                    enviar_json(cliente_socket, {
-                        "type": "create_room_response",
-                        "status": "success",
-                        "room": nova_sala
-                    })
-                    
-                    # Notifica a todos os usuários sobre a nova sala no explorador
-                    broadcast_incremental({
-                        "type": "room_created",
-                        "room": nova_sala,
-                        "protected": True if senha_val else False
-                    })
-                conn.close()
-
+                tratar_create_room(cliente_socket, nome, dados)
             elif tipo == "get_banned_users":
-                sala_m = sanitizar_string(dados.get("room", ""))
-                if sala_m:
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_m,))
-                    row_m = c.fetchone()
-                    e_admin = (role == "admin")
-                    e_dono = (row_m and row_m[0] == nome)
-                    
-                    if e_dono or e_admin:
-                        c.execute("SELECT usuario FROM banimentos WHERE sala = ?", (sala_m,))
-                        banned = [r[0] for r in c.fetchall()]
-                        enviar_json(cliente_socket, {
-                            "type": "banned_users_list",
-                            "room": sala_m,
-                            "users": banned
-                        })
-                    conn.close()
-
+                tratar_get_banned_users(cliente_socket, nome, dados)
             elif tipo == "nudge":
-                destinatario = sanitizar_string(dados.get("to", ""))
-                sala_msg = sanitizar_string(dados.get("room", "#geral"))
-                if destinatario:
-                    encontrado = enviar_para_usuario(destinatario, {"type": "nudge", "from": nome, "room": sala_msg})
-                    if encontrado:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": sala_msg,
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": f"Você chamou a atenção de {destinatario}.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                    else:
-                        enviar_json(cliente_socket, {
-                            "type": "chat_message",
-                            "room": sala_msg,
-                            "sender": "[Servidor]",
-                            "sender_color": "#000000",
-                            "content": f"O usuário {destinatario} não está online.",
-                            "is_system": True,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-
+                tratar_nudge(cliente_socket, nome, dados)
             elif tipo in ["file_start", "file_chunk", "file_end"]:
-                room = sanitizar_string(dados.get("room", "#geral"))
-                if room.startswith('@'):
-                    destinatario = room.replace("@", "", 1)
-                    enviar_para_usuario(destinatario, dados)
-                else:
-                    broadcast_incremental(dados, sala_alvo=room, exceto_socket=cliente_socket)
-                
-                if tipo == "file_end":
-                    filename = sanitizar_string(dados.get("filename", "Arquivo"))
-                    salvar_mensagem(room, nome, f"[FILE_SHARE_NOTIFICATION]:{filename}")
-
+                tratar_file_transfer(cliente_socket, dados)
             elif tipo == "file_share":
-                filename = sanitizar_string(dados.get("filename", ""))
-                file_data = dados.get("data", "")
-                room_share = sanitizar_string(dados.get("room", "#geral"))
-                
-                if file_data and len(file_data) > 1.5 * 1024 * 1024:
-                    enviar_json(cliente_socket, {
-                        "type": "chat_message",
-                        "room": room_share,
-                        "sender": "[Servidor]",
-                        "sender_color": "#000000",
-                        "content": "Erro: O arquivo enviado excede o limite permitido de 1MB.",
-                        "is_system": True,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                    continue
-                if filename and file_data:
-                    if room_share.startswith('@'):
-                        destinatario = room_share.replace("@", "", 1)
-                        sala_dm = obter_sala_dm(nome, destinatario)
-                        salvar_mensagem(sala_dm, nome, f"[FILE_SHARE]:{filename}:{file_data}")
-                        
-                        payload_rem = {
-                            "type": "file_share",
-                            "room": f"@{destinatario}",
-                            "sender": nome,
-                            "sender_color": cor,
-                            "filename": filename,
-                            "data": file_data,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }
-                        enviar_json(cliente_socket, payload_rem)
-                        enviar_para_usuario(destinatario, {
-                            "type": "file_share",
-                            "room": f"@{nome}",
-                            "sender": nome,
-                            "sender_color": cor,
-                            "filename": filename,
-                            "data": file_data,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                    else:
-                        salvar_mensagem(room_share, nome, f"[FILE_SHARE]:{filename}:{file_data}")
-                        
-                        dono_sala = "admin"
-                        try:
-                            conn_fs = obter_conexao()
-                            c_fs = conn_fs.cursor()
-                            c_fs.execute("SELECT dono FROM salas_config WHERE sala = ?", (room_share,))
-                            row_fs = c_fs.fetchone()
-                            if row_fs:
-                                dono_sala = row_fs[0]
-                            conn_fs.close()
-                        except:
-                            pass
-                            
-                        badge_val = ""
-                        if role == 'admin':
-                            badge_val = "⭐ Admin"
-                        elif nome == dono_sala:
-                            badge_val = "👑 Dono"
-
-                        broadcast_incremental({
-                            "type": "file_share",
-                            "room": room_share,
-                            "sender": nome,
-                            "sender_color": cor,
-                            "filename": filename,
-                            "data": file_data,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "badge": badge_val
-                        }, sala_alvo=room_share)
-
+                tratar_file_share(cliente_socket, nome, dados)
             elif tipo == "search_history":
-                query_t = sanitizar_string(dados.get("query", ""))
-                if query_t:
-                    conn = obter_conexao()
-                    c = conn.cursor()
-                    # Garante privacidade: o usuário só vê histórico de canais públicos ou das DMs que participa.
-                    c.execute("""
-                        SELECT sala, remetente, mensagem, data 
-                        FROM historico 
-                        WHERE mensagem LIKE ? 
-                          AND (sala NOT LIKE '@%' OR sala LIKE ? OR sala LIKE ?)
-                        ORDER BY rowid DESC LIMIT 50
-                    """, (f"%{query_t}%", f"%@{nome}:%", f"%:{nome}%"))
-                    rows = c.fetchall()
-                    conn.close()
-                    
-                    results = []
-                    for r in rows:
-                        results.append({
-                            "room": r[0],
-                            "sender": r[1],
-                            "content": r[2],
-                            "timestamp": r[3]
-                        })
-                        
-                    enviar_json(cliente_socket, {
-                        "type": "search_results",
-                        "query": query_t,
-                        "results": results
-                    })
-
+                tratar_search_history(cliente_socket, nome, dados)
             elif tipo == "help":
-                ajuda = (
-                    "\n📋 **GUIA DE COMANDOS DO CHATPY**\n\n"
-                    "💬 **Mensagens e Interação:**\n"
-                    "• `/msg <usuario> <texto>` : Envia uma mensagem privada (DM).\n"
-                    "• `/chamar` : Chama a atenção na DM (faz a janela tremer).\n"
-                    "• `/chamar <usuario>` : Chama a atenção de um usuário na sala atual.\n"
-                    "• `/roll` : Rola um dado de 1 a 100.\n"
-                    "• `/coinflip` : Joga uma moeda (Cara ou Coroa).\n\n"
-                    "👥 **Amizades:**\n"
-                    "• `/friend add <usuario>` : Envia ou aceita convite de amizade.\n"
-                    "• `/friend remove <usuario>` : Remove um usuário da sua lista de amigos.\n\n"
-                    "🛡️ **Moderação (Apenas Dono da Sala ou Admin):**\n"
-                    "• `/kick <usuario>` : Expulsa temporariamente o usuário da sala.\n"
-                    "• `/ban <usuario>` : Bane permanentemente o usuário da sala.\n"
-                    "• `/unban <usuario>` : Remove o banimento do usuário da sala.\n"
-                    "• `/setpass <senha>` : Define uma senha para a sala (em branco para remover).\n\n"
-                    "💡 **Atalhos Úteis (Interface):**\n"
-                    "• **Clique Duplo** em uma aba para reabrir/focar nela.\n"
-                    "• **Clique com Botão Direito** nas abas ou lista de salas para opções rápidas (Fixar, Fechar, Excluir).\n"
-                    "• **Arrastar e Soltar (Drag & Drop)** arquivos na tela do chat para compartilhá-los.\n"
-                )
-                enviar_json(cliente_socket, {
-                    "type": "chat_message",
-                    "room": dados.get("room", "#geral"),
-                    "sender": "[Servidor]",
-                    "sender_color": "#000000",
-                    "content": ajuda,
-                    "is_system": True,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-                
+                tratar_help(cliente_socket, dados)
             elif tipo == "request_state":
-                empurrar_estado_inicial(cliente_socket, nome)
-                
+                tratar_request_state(cliente_socket, nome)
             elif tipo == "msg":
-                texto = sanitizar_string(dados.get("content", ""))
-                sala_dest = sanitizar_string(dados.get("room", "#geral"))
-                
-                # Validação de segurança: o cliente deve estar inscrito na sala para falar nela!
-                with clientes_lock:
-                    pode_falar = (sala_dest in clientes_conectados[cliente_socket]['salas'])
-                    
-                if texto and pode_falar:
-                    if texto == "/roll":
-                        resultado = random.randint(1, 100)
-                        resposta_bot = f"[Bot]: {nome} rolou e tirou {resultado} (1-100)."
-                        salvar_mensagem(sala_dest, "[Bot]", resposta_bot)
-                        transmitir(resposta_bot, sala_dest, remetente_socket=None, remetente_nome="[Bot]", is_sistema=True)
-                    elif texto == "/coinflip":
-                        resultado = random.choice(["Cara", "Coroa"])
-                        resposta_bot = f"[Bot]: {nome} lançou uma moeda e deu {resultado}."
-                        salvar_mensagem(sala_dest, "[Bot]", resposta_bot)
-                        transmitir(resposta_bot, sala_dest, remetente_socket=None, remetente_nome="[Bot]", is_sistema=True)
-                    else:
-                        salvar_mensagem(sala_dest, nome, texto)
-                        print(f"[{sala_dest}] [{nome}]: {texto}")
-                        transmitir(texto, sala_dest, cliente_socket, remetente_nome=nome, is_sistema=False)
+                tratar_msg(cliente_socket, nome, dados)
+        except (socket.error, ConnectionError, json.JSONDecodeError) as e:
+            logging.error(f"[Erro no Loop do Cliente {nome}]: {e}")
+            break
         except Exception as e:
-            print(f"[Erro no Loop do Cliente]: {e}")
+            logging.error(f"[Erro Inesperado no Loop do Cliente {nome}]: {e}", exc_info=True)
             break
             
     remover_cliente(cliente_socket)
@@ -1633,10 +1739,10 @@ def configurar_ssl():
         from cryptography.hazmat.primitives import serialization
         import datetime
 
-        print("[*] Gerando certificado SSL autoassinado local...")
+        logging.info("Gerando certificado SSL autoassinado local...")
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, u"localhost"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
         ])
         cert = x509.CertificateBuilder().subject_name(
             subject
@@ -1661,10 +1767,10 @@ def configurar_ssl():
         with open(cert_file, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
             
-        print("[*] Certificado SSL gerado com sucesso!")
+        logging.info("Certificado SSL gerado com sucesso!")
         return cert_file, key_file
     except Exception as e:
-        print(f"[!] Não foi possível gerar certificado SSL automaticamente: {e}")
+        logging.error(f"Não foi possível gerar certificado SSL automaticamente: {e}")
         return None, None
 
 def iniciar_servidor():
@@ -1677,18 +1783,18 @@ def iniciar_servidor():
     cert_file, key_file = configurar_ssl()
     
     if not cert_file or not key_file:
-        print("[CRÍTICO] Certificados SSL não disponíveis. O servidor exige SSL ativo para iniciar. Parando...")
+        logging.critical("Certificados SSL não disponíveis. O servidor exige SSL ativo para iniciar. Parando...")
         return
         
     try:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(certfile=cert_file, keyfile=key_file)
-        print("[*] Servidor rodando com criptografia SSL/TLS ativa (Sem Fallback).")
+        logging.info("Servidor rodando com criptografia SSL/TLS ativa (Sem Fallback).")
     except Exception as e:
-        print(f"[CRÍTICO] Falha ao configurar contexto SSL/TLS: {e}. Parando servidor...")
+        logging.critical(f"Falha ao configurar contexto SSL/TLS: {e}. Parando servidor...")
         return
             
-    print(f"[*] Servidor ChatPy rodando no IP {IP}:{PORTA}...")
+    logging.info(f"Servidor ChatPy rodando no IP {IP}:{PORTA}...")
     
     while True:
         try:
@@ -1696,13 +1802,13 @@ def iniciar_servidor():
             try:
                 cliente_socket = context.wrap_socket(cliente_socket, server_side=True)
             except Exception as ssl_err:
-                print(f"[Erro SSL]: Conexão recusada de {endereco}: {ssl_err}")
+                logging.error(f"Conexão recusada de {endereco} devido a erro SSL: {ssl_err}")
                 cliente_socket.close()
                 continue
                 
             threading.Thread(target=gerenciar_cliente, args=(cliente_socket, endereco), daemon=True).start()
         except Exception as e:
-            print(f"[Erro Accept]: {e}")
+            logging.error(f"Erro no Accept: {e}")
 
 if __name__ == "__main__":
     iniciar_servidor()

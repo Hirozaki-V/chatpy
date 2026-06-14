@@ -53,7 +53,7 @@ class JsonSocketBuffer:
                 self.buffer += dados.decode('utf-8')
                 if len(self.buffer) > self.max_buffer_size:
                     return None
-            except:
+            except (socket.error, UnicodeDecodeError):
                 return None
         
         linha, self.buffer = self.buffer.split("\n", 1)
@@ -67,7 +67,7 @@ def enviar_json(sock, dados):
         mensagem = (json.dumps(dados) + "\n").encode('utf-8')
         sock.sendall(mensagem)
         return True
-    except:
+    except socket.error:
         return False
 
 def carregar_config_local():
@@ -75,7 +75,7 @@ def carregar_config_local():
         if os.path.exists("config_local.json"):
             with open("config_local.json", "r", encoding="utf-8") as f:
                 return json.load(f)
-    except:
+    except (OSError, json.JSONDecodeError):
         pass
     return {
         "lembrar_usuario": False,
@@ -91,7 +91,7 @@ def salvar_config_local(config):
     try:
         with open("config_local.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4)
-    except:
+    except OSError:
         pass
 
 def conectar(ip=None, porta=None):
@@ -102,14 +102,14 @@ def conectar(ip=None, porta=None):
         ip = cfg.get("servidor_ip", "127.0.0.1")
         try:
             porta = int(cfg.get("servidor_porta", 5000))
-        except:
+        except ValueError:
             porta = 5000
         
     try:
         if cliente_socket:
             try:
                 cliente_socket.close()
-            except:
+            except socket.error:
                 pass
             cliente_socket = None
             cliente_buffer = None
@@ -133,9 +133,60 @@ def conectar(ip=None, porta=None):
         cliente_buffer = JsonSocketBuffer(cliente_socket)
         print(f"[*] Conexão criptografada (SSL/TLS) estabelecida com {ip}:{porta}.")
         return True
-    except Exception as e:
+    except (socket.error, ssl.SSLError, Exception) as e:
         print(f"[!] Falha na conexão SSL segura com {ip}:{porta} -> {e}")
         return False
+
+def eh_emoji(char):
+    cp = ord(char)
+    return (
+        0x1F600 <= cp <= 0x1F64F or
+        0x1F300 <= cp <= 0x1F5FF or
+        0x1F680 <= cp <= 0x1F6FF or
+        0x1F900 <= cp <= 0x1F9FF or
+        0x1FA70 <= cp <= 0x1FAFF or
+        0x2700 <= cp <= 0x27BF or
+        0x2600 <= cp <= 0x26FF or
+        0x2300 <= cp <= 0x23FF or
+        0x2B50 <= cp <= 0x2B50 or
+        0x1F1E6 <= cp <= 0x1F1FF
+    )
+
+def inserir_texto_e_emojis(widget, texto, base_tags=None):
+    if not base_tags:
+        tags_lst = []
+    elif isinstance(base_tags, tuple):
+        tags_lst = list(base_tags)
+    elif isinstance(base_tags, str):
+        tags_lst = [base_tags]
+    else:
+        tags_lst = list(base_tags)
+
+    current_segment = []
+    current_is_emoji = None
+    
+    for char in texto:
+        is_em = eh_emoji(char)
+        if current_is_emoji is None:
+            current_is_emoji = is_em
+            current_segment.append(char)
+        elif current_is_emoji == is_em:
+            current_segment.append(char)
+        else:
+            seg_str = "".join(current_segment)
+            if current_is_emoji:
+                widget.insert(tk.END, seg_str, tuple(tags_lst + ["emoji"]))
+            else:
+                widget.insert(tk.END, seg_str, tuple(tags_lst) if tags_lst else None)
+            current_segment = [char]
+            current_is_emoji = is_em
+            
+    if current_segment:
+        seg_str = "".join(current_segment)
+        if current_is_emoji:
+            widget.insert(tk.END, seg_str, tuple(tags_lst + ["emoji"]))
+        else:
+            widget.insert(tk.END, seg_str, tuple(tags_lst) if tags_lst else None)
 
 def centralizar_janela(toplevel, parent):
     toplevel.update_idletasks()
@@ -551,15 +602,15 @@ def iniciar_modo_gui(janela):
         partes = pattern.split(texto)
         for parte in partes:
             if parte.startswith('`') and parte.endswith('`'):
-                widget.insert(tk.END, parte[1:-1], "code")
+                inserir_texto_e_emojis(widget, parte[1:-1], "code")
             elif parte.startswith('***') and parte.endswith('***'):
-                widget.insert(tk.END, parte[3:-3], ("bold", "italic"))
+                inserir_texto_e_emojis(widget, parte[3:-3], ("bold", "italic"))
             elif parte.startswith('**') and parte.endswith('**'):
-                widget.insert(tk.END, parte[2:-2], "bold")
+                inserir_texto_e_emojis(widget, parte[2:-2], "bold")
             elif parte.startswith('*') and parte.endswith('*'):
-                widget.insert(tk.END, parte[1:-1], "italic")
+                inserir_texto_e_emojis(widget, parte[1:-1], "italic")
             else:
-                widget.insert(tk.END, parte)
+                inserir_texto_e_emojis(widget, parte)
 
     def renderizar_miniatura_imagem(caixa_texto, filename, b64_data):
         try:
@@ -613,8 +664,8 @@ def iniciar_modo_gui(janela):
                 corpo = texto.replace(prefixo_sem_badge, "", 1) if texto.startswith(prefixo_sem_badge) else texto
                 
                 agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                caixa_texto.insert(tk.END, f"[{agora}] ")
-                caixa_texto.insert(tk.END, prefixo, tag_name)
+                inserir_texto_e_emojis(caixa_texto, f"[{agora}] ")
+                inserir_texto_e_emojis(caixa_texto, prefixo, tag_name)
                 inserir_com_markdown(caixa_texto, corpo + "\n")
             else:
                 inserir_com_markdown(caixa_texto, texto + "\n")
@@ -658,13 +709,11 @@ def iniciar_modo_gui(janela):
                 with open(log_path, "r", encoding="utf-8") as f:
                     linhas = f.readlines()
                 caixa_texto.config(state=tk.NORMAL)
-                caixa_texto.insert(tk.END, "--- Logs locais anteriores ---\n")
                 for linha in linhas[-50:]:  
-                    caixa_texto.insert(tk.END, linha)
-                caixa_texto.insert(tk.END, "-----------------------------\n\n")
+                    inserir_texto_e_emojis(caixa_texto, linha)
                 caixa_texto.config(state=tk.DISABLED)
                 caixa_texto.yview(tk.END)
-            except:
+            except (OSError, IOError):
                 pass
 
     def criar_aba(nome_sala, selecionar=True):
@@ -681,10 +730,11 @@ def iniciar_modo_gui(janela):
         caixa_texto = scrolledtext.ScrolledText(frame_aba, state=tk.DISABLED, wrap=tk.WORD, font=("Segoe UI", 10))
         caixa_texto.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Tags de Markdown no widget Text com suporte a Segoe UI
+        # Tags de Markdown no widget Text com suporte a Segoe UI e Emojis Coloridos
         caixa_texto.tag_config("bold", font=("Segoe UI", 10, "bold"))
         caixa_texto.tag_config("italic", font=("Segoe UI", 10, "italic"))
         caixa_texto.tag_config("code", font=("Courier New", 10), background="#e0e0e0", foreground="#c7254e")
+        caixa_texto.tag_config("emoji", font=("Segoe UI Emoji", 10))
         
         lock_ic = "🔒" if salas_protegidas_estado.get(nome_sala) else ""
         notebook.add(frame_aba, text=f"{lock_ic}{nome_sala}")
@@ -742,9 +792,9 @@ def iniciar_modo_gui(janela):
             if not timestamp:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
-            caixa_texto.insert(tk.END, f"[{timestamp}] ")
+            inserir_texto_e_emojis(caixa_texto, f"[{timestamp}] ")
             badge_prefix = f"[{badge}] " if badge else ""
-            caixa_texto.insert(tk.END, f"{badge_prefix}[{remetente}]: ", tag_remetente)
+            inserir_texto_e_emojis(caixa_texto, f"{badge_prefix}[{remetente}]: ", tag_remetente)
             
             # Tenta renderizar miniatura primeiro se for imagem
             foi_imagem = renderizar_miniatura_imagem(caixa_texto, filename, b64_data)
@@ -759,7 +809,7 @@ def iniciar_modo_gui(janela):
             if foi_imagem:
                 txt_link = f"(Clique para salvar imagem completa: {filename})"
                 
-            caixa_texto.insert(tk.END, txt_link + "\n", tag_file)
+            inserir_texto_e_emojis(caixa_texto, txt_link + "\n", tag_file)
             caixa_texto.config(state=tk.DISABLED)
             
             if scroll_no_fim:
@@ -2561,10 +2611,14 @@ def iniciar_modo_gui(janela):
             ttk.Button(btn_modal_frame, text="Aceitar", command=lambda: tratar_resposta(True)).pack(side=tk.LEFT, padx=10, expand=True, fill=tk.X)
             ttk.Button(btn_modal_frame, text="Recusar", command=lambda: tratar_resposta(False)).pack(side=tk.RIGHT, padx=10, expand=True, fill=tk.X)
 
-        ttk.Button(btn_friend_frame, text="+ Amigo", command=btn_add_amigo, width=8).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_friend_frame, text="- Amigo", command=btn_rem_amigo, width=8).pack(side=tk.LEFT, padx=2)
-        btn_ver_convites = ttk.Button(btn_friend_frame, text=f"📩 Convites ({len(lista_convites_pendentes)})", command=exibir_modal_convites, width=12)
-        btn_ver_convites.pack(side=tk.LEFT, padx=2)
+        frame_botoes_amigos = tk.Frame(btn_friend_frame, bg="#f0f0f0")
+        frame_botoes_amigos.pack(fill=tk.X, pady=(0, 2))
+        
+        ttk.Button(frame_botoes_amigos, text="+ Amigo", command=btn_add_amigo).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        ttk.Button(frame_botoes_amigos, text="- Amigo", command=btn_rem_amigo).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        
+        btn_ver_convites = ttk.Button(btn_friend_frame, text=f"📩 Convites ({len(lista_convites_pendentes)})", command=exibir_modal_convites)
+        btn_ver_convites.pack(fill=tk.X, padx=2, pady=(2, 0))
 
         # Inicia aba padrão #geral
         criar_aba("#geral")
