@@ -593,7 +593,7 @@ def iniciar_modo_gui(janela):
             print(f"[Miniatura Erro]: {e}")
         return False
 
-    def atualizar_chat(nome_sala, texto, cor_remetente=None, remetente=None):
+    def atualizar_chat(nome_sala, texto, cor_remetente=None, remetente=None, badge=None):
         try:
             caixa_texto = abas[nome_sala]
             caixa_texto.config(state=tk.NORMAL)
@@ -605,10 +605,12 @@ def iniciar_modo_gui(janela):
             
             if remetente and cor_remetente:
                 tag_name = f"tag_{remetente}_{cor_remetente.replace('#', '')}"
-                caixa_texto.tag_config(tag_name, foreground=cor_remetente, font=("Consolas", 10, "bold"))
+                caixa_texto.tag_config(tag_name, foreground=cor_remetente, font=("Segoe UI", 10, "bold"))
                 
-                prefixo = f"[{remetente}]: "
-                corpo = texto.replace(prefixo, "", 1) if texto.startswith(prefixo) else texto
+                badge_prefix = f"[{badge}] " if badge else ""
+                prefixo_sem_badge = f"[{remetente}]: "
+                prefixo = f"{badge_prefix}[{remetente}]: "
+                corpo = texto.replace(prefixo_sem_badge, "", 1) if texto.startswith(prefixo_sem_badge) else texto
                 
                 agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 caixa_texto.insert(tk.END, f"[{agora}] ")
@@ -618,7 +620,7 @@ def iniciar_modo_gui(janela):
                 inserir_com_markdown(caixa_texto, texto + "\n")
                 
             if usuario_atual and f"@{usuario_atual}".lower() in texto.lower():
-                caixa_texto.tag_config("mention_highlight", background="yellow", foreground="red", font=("Consolas", 10, "bold"))
+                caixa_texto.tag_config("mention_highlight", background="yellow", foreground="red", font=("Segoe UI", 10, "bold"))
                 idx = caixa_texto.search(f"@{usuario_atual}", start_idx, "end", nocase=True)
                 while idx:
                     end_idx = f"{idx} + {len(usuario_atual) + 1}c"
@@ -648,25 +650,7 @@ def iniciar_modo_gui(janela):
             lock_ic = "🔒" if salas_protegidas_estado.get(r) else ""
             listbox_abertas.insert(tk.END, f"{pin}{lock_ic}{indicador}{r}")
 
-    def criar_aba(nome_sala, selecionar=True):
-        if nome_sala in abas:
-            if selecionar:
-                for tab_id in notebook.tabs():
-                    tab_txt = notebook.tab(tab_id, "text").replace("🔴 ", "").replace("📌", "").replace("🔒", "")
-                    if tab_txt == nome_sala:
-                        notebook.select(tab_id)
-                        break
-            return
-        
-        frame_aba = ttk.Frame(notebook)
-        caixa_texto = scrolledtext.ScrolledText(frame_aba, state=tk.DISABLED, wrap=tk.WORD, font=("Consolas", 10))
-        caixa_texto.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Tags de Markdown no widget Text
-        caixa_texto.tag_config("bold", font=("Consolas", 10, "bold"))
-        caixa_texto.tag_config("italic", font=("Consolas", 10, "italic"))
-        caixa_texto.tag_config("code", font=("Courier New", 10), background="#e0e0e0", foreground="#c7254e")
-        
+    def carregar_logs_locais(nome_sala, caixa_texto):
         nome_arquivo_log = nome_sala.replace(":", "_").replace("@", "dm_")
         log_path = f"logs/{nome_arquivo_log}.log"
         if os.path.exists(log_path):
@@ -683,6 +667,25 @@ def iniciar_modo_gui(janela):
             except:
                 pass
 
+    def criar_aba(nome_sala, selecionar=True):
+        if nome_sala in abas:
+            if selecionar:
+                for tab_id in notebook.tabs():
+                    tab_txt = notebook.tab(tab_id, "text").replace("🔴 ", "").replace("📌", "").replace("🔒", "")
+                    if tab_txt == nome_sala:
+                        notebook.select(tab_id)
+                        break
+            return
+        
+        frame_aba = ttk.Frame(notebook)
+        caixa_texto = scrolledtext.ScrolledText(frame_aba, state=tk.DISABLED, wrap=tk.WORD, font=("Segoe UI", 10))
+        caixa_texto.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Tags de Markdown no widget Text com suporte a Segoe UI
+        caixa_texto.tag_config("bold", font=("Segoe UI", 10, "bold"))
+        caixa_texto.tag_config("italic", font=("Segoe UI", 10, "italic"))
+        caixa_texto.tag_config("code", font=("Courier New", 10), background="#e0e0e0", foreground="#c7254e")
+        
         lock_ic = "🔒" if salas_protegidas_estado.get(nome_sala) else ""
         notebook.add(frame_aba, text=f"{lock_ic}{nome_sala}")
         abas[nome_sala] = caixa_texto
@@ -724,7 +727,7 @@ def iniciar_modo_gui(janela):
             if atualizar_painel_moderacao:
                 atualizar_painel_moderacao()
 
-    def inserir_arquivo_no_chat(nome_sala, remetente, cor_remetente, filename, b64_data, timestamp=None):
+    def inserir_arquivo_no_chat(nome_sala, remetente, cor_remetente, filename, b64_data, timestamp=None, badge=None):
         try:
             caixa_texto = abas.get(nome_sala)
             if not caixa_texto: return
@@ -734,13 +737,14 @@ def iniciar_modo_gui(janela):
             scroll_no_fim = pos_y >= 0.9
             
             tag_remetente = f"tag_{remetente}_{cor_remetente.replace('#', '')}"
-            caixa_texto.tag_config(tag_remetente, foreground=cor_remetente, font=("Consolas", 10, "bold"))
+            caixa_texto.tag_config(tag_remetente, foreground=cor_remetente, font=("Segoe UI", 10, "bold"))
             
             if not timestamp:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
             caixa_texto.insert(tk.END, f"[{timestamp}] ")
-            caixa_texto.insert(tk.END, f"[{remetente}]: ", tag_remetente)
+            badge_prefix = f"[{badge}] " if badge else ""
+            caixa_texto.insert(tk.END, f"{badge_prefix}[{remetente}]: ", tag_remetente)
             
             # Tenta renderizar miniatura primeiro se for imagem
             foi_imagem = renderizar_miniatura_imagem(caixa_texto, filename, b64_data)
@@ -748,7 +752,7 @@ def iniciar_modo_gui(janela):
             tag_file = f"file_{time.time()}_{filename.replace('.', '_')}"
             arquivos_recebidos[tag_file] = (filename, b64_data)
             
-            caixa_texto.tag_config(tag_file, foreground="blue", underline=True, font=("Consolas", 10, "italic"))
+            caixa_texto.tag_config(tag_file, foreground="blue", underline=True, font=("Segoe UI", 10, "italic"))
             caixa_texto.tag_bind(tag_file, "<Button-1>", lambda event, t=tag_file: baixar_arquivo_compartilhado(t))
             
             txt_link = f"[Arquivo: {filename}] (Clique para baixar)"
@@ -841,6 +845,8 @@ def iniciar_modo_gui(janela):
                 room = dados.get("room")
                 if status == "success":
                     messagebox.showinfo("Sucesso", f"Sala '{room}' criada com sucesso!")
+                    if room not in owned_rooms:
+                        owned_rooms.append(room)
                     criar_aba(room)
                 else:
                     messagebox.showerror("Erro", dados.get("message", "Falha ao criar sala."))
@@ -858,6 +864,8 @@ def iniciar_modo_gui(janela):
 
             elif tipo == "room_deleted":
                 room = dados.get("room")
+                if room in owned_rooms:
+                    owned_rooms.remove(room)
                 if listbox_salas:
                     for i in range(listbox_salas.size()):
                         try:
@@ -976,6 +984,7 @@ def iniciar_modo_gui(janela):
                 content = dados.get("content")
                 room = dados.get("room", sala_atual)
                 is_system = dados.get("is_system", False)
+                badge = dados.get("badge", "")
                 
                 # Só cria aba local se não existir
                 criar_aba(room, selecionar=False)
@@ -985,7 +994,7 @@ def iniciar_modo_gui(janela):
                     atualizar_chat(room, texto_formatado)
                 else:
                     texto_formatado = f"[{sender}]: {content}"
-                    atualizar_chat(room, texto_formatado, sender_color, sender)
+                    atualizar_chat(room, texto_formatado, sender_color, sender, badge=badge)
                 
                 salvar_log_local(room, texto_formatado)
 
@@ -1256,6 +1265,11 @@ def iniciar_modo_gui(janela):
                                 break
                     criar_aba("#geral")
                     atualizar_listbox_abertas()
+                elif status == "success":
+                    if room and room in abas:
+                        caixa_texto = abas[room]
+                        if "Logs locais anteriores" not in caixa_texto.get("1.0", tk.END):
+                            carregar_logs_locais(room, caixa_texto)
                     
             elif tipo == "force_join":
                 target_room = dados.get("room")
@@ -1278,37 +1292,46 @@ def iniciar_modo_gui(janela):
                     caixa_texto = abas[room]
                     caixa_texto.config(state=tk.NORMAL)
                     caixa_texto.delete("1.0", tk.END)
+                    carregar_logs_locais(room, caixa_texto)
                     for msg in dados.get("messages", []):
                         sender = msg.get("sender")
                         sender_color = msg.get("sender_color", "#000000")
                         content = msg.get("content", "")
                         timestamp = msg.get("timestamp")
+                        badge = msg.get("badge", "")
                         
                         if content.startswith("[FILE_SHARE]:"):
                             try:
                                 partes = content.split(":", 2)
                                 filename = partes[1]
                                 b64_data = partes[2]
-                                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data, timestamp=timestamp)
+                                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data, timestamp=timestamp, badge=badge)
                             except:
-                                caixa_texto.insert(tk.END, f"[{timestamp}] {sender}: {content}\n")
+                                tag_remetente = f"tag_{sender}_{sender_color.replace('#', '')}"
+                                caixa_texto.tag_config(tag_remetente, foreground=sender_color, font=("Segoe UI", 10, "bold"))
+                                badge_prefix = f"[{badge}] " if badge else ""
+                                caixa_texto.insert(tk.END, f"[{timestamp}] ")
+                                caixa_texto.insert(tk.END, f"{badge_prefix}[{sender}]: ", tag_remetente)
+                                caixa_texto.insert(tk.END, f"{content}\n")
                         elif content.startswith("[FILE_SHARE_NOTIFICATION]:"):
                             try:
                                 partes = content.split(":", 1)
                                 filename = partes[1]
                                 tag_remetente = f"tag_{sender}_{sender_color.replace('#', '')}"
-                                caixa_texto.tag_config(tag_remetente, foreground=sender_color, font=("Consolas", 10, "bold"))
+                                caixa_texto.tag_config(tag_remetente, foreground=sender_color, font=("Segoe UI", 10, "bold"))
                                 
                                 caixa_texto.insert(tk.END, f"[{timestamp}] ")
-                                caixa_texto.insert(tk.END, f"[{sender}]: ", tag_remetente)
+                                badge_prefix = f"[{badge}] " if badge else ""
+                                caixa_texto.insert(tk.END, f"{badge_prefix}[{sender}]: ", tag_remetente)
                                 caixa_texto.insert(tk.END, f"[Arquivo: {filename}] (Disponível ao vivo)\n", "italic")
                             except:
                                 pass
                         else:
                             tag_remetente = f"tag_{sender}_{sender_color.replace('#', '')}"
-                            caixa_texto.tag_config(tag_remetente, foreground=sender_color, font=("Consolas", 10, "bold"))
+                            caixa_texto.tag_config(tag_remetente, foreground=sender_color, font=("Segoe UI", 10, "bold"))
                             caixa_texto.insert(tk.END, f"[{timestamp}] ")
-                            caixa_texto.insert(tk.END, f"[{sender}]: ", tag_remetente)
+                            badge_prefix = f"[{badge}] " if badge else ""
+                            caixa_texto.insert(tk.END, f"{badge_prefix}[{sender}]: ", tag_remetente)
                             inserir_com_markdown(caixa_texto, f"{content}\n")
                             
                     caixa_texto.config(state=tk.DISABLED)
@@ -1320,12 +1343,13 @@ def iniciar_modo_gui(janela):
                 sender_color = dados.get("sender_color", "#000000")
                 filename = dados.get("filename")
                 b64_data = dados.get("data")
+                badge = dados.get("badge", "")
                 
                 texto_msg = f"[{sender}]: [Arquivo Compartilhado] {filename}"
                 deve_selecionar = (sender == usuario_atual)
                 criar_aba(room, selecionar=deve_selecionar)
                 
-                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data)
+                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data, badge=badge)
                 salvar_log_local(room, texto_msg)
                 
                 if room != sala_atual:
@@ -1499,12 +1523,17 @@ def iniciar_modo_gui(janela):
     def mostrar_menu_emoticons():
         menu = tk.Menu(janela, tearoff=0)
         emoticons = [
-            "😊", "😂", "👍", "🔥", "🎉", "❤️",
-            ":-)", ";-)", ":-(", ":-P", "xD",
-            "¯\\_(ツ)_/¯", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ", "ʕ•ᴥ•ʔ"
+            "😊", "😂", "🤣", "🤔", "👀", "👍", "🔥", "❤️",
+            "🎉", "🚀", "✨", "😎", "👏", "🙌", "👑", "⭐",
+            "💀", "💡", "⚠️", "💩", "🎨", "🎵", "🎮", "👾",
+            "💻", "🍕", "☕", "🍺", "✔️", "❌", "💬", "🔔"
         ]
-        for emo in emoticons:
-            menu.add_command(label=emo, command=lambda e=emo: inserir_emoticon(e))
+        for i, emo in enumerate(emoticons):
+            col_break = (i > 0 and i % 8 == 0)
+            if col_break:
+                menu.add_command(label=emo, command=lambda e=emo: inserir_emoticon(e), columnbreak=True)
+            else:
+                menu.add_command(label=emo, command=lambda e=emo: inserir_emoticon(e))
             
         x = btn_emoticons.winfo_rootx()
         y = btn_emoticons.winfo_rooty() - 165
@@ -1818,7 +1847,7 @@ def iniciar_modo_gui(janela):
         res_frame = tk.Frame(main_f)
         res_frame.pack(fill=tk.BOTH, expand=True)
         
-        dialog_busca_text = scrolledtext.ScrolledText(res_frame, font=("Consolas", 9), wrap=tk.WORD)
+        dialog_busca_text = scrolledtext.ScrolledText(res_frame, font=("Segoe UI", 9), wrap=tk.WORD)
         dialog_busca_text.pack(fill=tk.BOTH, expand=True)
         dialog_busca_text.insert(tk.END, "Digite o termo acima para buscar no histórico do SQLite.")
         dialog_busca_text.config(state=tk.DISABLED)
@@ -2095,7 +2124,7 @@ def iniciar_modo_gui(janela):
         main_content.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Sidebar à Direita
-        sidebar = tk.Frame(main_content, width=200, bg="#f0f0f0", padx=5)
+        sidebar = tk.Frame(main_content, width=280, bg="#f0f0f0", padx=5)
         sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         
         # Notebook (Abas) à Esquerda
@@ -2148,7 +2177,7 @@ def iniciar_modo_gui(janela):
         frame_list_abertas = tk.Frame(sidebar)
         frame_list_abertas.pack(fill=tk.BOTH, expand=True)
         
-        listbox_abertas = tk.Listbox(frame_list_abertas, height=4, width=22, font=("Arial", 9))
+        listbox_abertas = tk.Listbox(frame_list_abertas, height=4, width=33, font=("Arial", 9))
         listbox_abertas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         scroll_abertas = ttk.Scrollbar(frame_list_abertas, orient="vertical", command=listbox_abertas.yview)
@@ -2258,7 +2287,7 @@ def iniciar_modo_gui(janela):
         frame_list_salas = tk.Frame(sidebar)
         frame_list_salas.pack(fill=tk.BOTH, expand=True)
         
-        listbox_salas = tk.Listbox(frame_list_salas, height=4, width=22, font=("Arial", 9))
+        listbox_salas = tk.Listbox(frame_list_salas, height=4, width=33, font=("Arial", 9))
         listbox_salas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         listbox_salas.bind("<Button-3>", show_menu_salas)
         
@@ -2281,7 +2310,7 @@ def iniciar_modo_gui(janela):
         frame_list_usuarios = tk.Frame(sidebar)
         frame_list_usuarios.pack(fill=tk.BOTH, expand=True)
         
-        listbox_usuarios = tk.Listbox(frame_list_usuarios, height=4, width=22, font=("Arial", 9))
+        listbox_usuarios = tk.Listbox(frame_list_usuarios, height=4, width=33, font=("Arial", 9))
         listbox_usuarios.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         scroll_usuarios = ttk.Scrollbar(frame_list_usuarios, orient="vertical", command=listbox_usuarios.yview)
@@ -2445,7 +2474,7 @@ def iniciar_modo_gui(janela):
         frame_list_amigos = tk.Frame(sidebar)
         frame_list_amigos.pack(fill=tk.BOTH, expand=True)
         
-        listbox_amigos = tk.Listbox(frame_list_amigos, height=4, width=22, font=("Arial", 9))
+        listbox_amigos = tk.Listbox(frame_list_amigos, height=4, width=33, font=("Arial", 9))
         listbox_amigos.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         scroll_amigos = ttk.Scrollbar(frame_list_amigos, orient="vertical", command=listbox_amigos.yview)
@@ -2540,10 +2569,19 @@ def iniciar_modo_gui(janela):
         # Inicia aba padrão #geral
         criar_aba("#geral")
         
+        def auto_refresh_salas():
+            try:
+                if frame_chat and frame_chat.winfo_exists() and cliente_socket:
+                    enviar_json(cliente_socket, {"type": "request_state"})
+                    janela.after(15000, auto_refresh_salas)
+            except:
+                pass
+
         # Dispara monitoramentos periódicos e escutas
         atualizar_label_digitando()
         processar_fila_rede()
         verificar_inatividade()
+        auto_refresh_salas()
         
         threading.Thread(target=escutar_servidor, daemon=True).start()
 

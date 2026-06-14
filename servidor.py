@@ -118,7 +118,7 @@ def buscar_historico(sala):
     conn = obter_conexao()
     c = conn.cursor()
     c.execute("""
-        SELECT h.data, h.remetente, h.mensagem, u.cor 
+        SELECT h.data, h.remetente, h.mensagem, u.cor, u.role 
         FROM historico h 
         LEFT JOIN usuarios u ON h.remetente = u.nome 
         WHERE h.sala = ? 
@@ -373,11 +373,30 @@ def enviar_para_usuario(nome_usuario, payload):
 def transmitir(mensagem_texto, sala_alvo, remetente_socket=None, remetente_nome="[Servidor]", is_sistema=True):
     # Determina a cor do remetente
     cor_remetente = "#000000"
+    role_remetente = "user"
     if remetente_socket:
         with clientes_lock:
             if remetente_socket in clientes_conectados:
                 cor_remetente = clientes_conectados[remetente_socket]['cor']
+                role_remetente = clientes_conectados[remetente_socket].get('role', 'user')
         
+    badge_val = ""
+    if not is_sistema and remetente_socket:
+        if role_remetente == 'admin':
+            badge_val = "⭐ Admin"
+        else:
+            dono_sala = "admin"
+            if sala_alvo and not sala_alvo.startswith('@'):
+                conn = obter_conexao()
+                c = conn.cursor()
+                c.execute("SELECT dono FROM salas_config WHERE sala = ?", (sala_alvo,))
+                row_d = c.fetchone()
+                if row_d:
+                    dono_sala = row_d[0]
+                conn.close()
+            if remetente_nome == dono_sala:
+                badge_val = "👑 Dono"
+
     payload = {
         "type": "chat_message",
         "room": sala_alvo,
@@ -385,7 +404,8 @@ def transmitir(mensagem_texto, sala_alvo, remetente_socket=None, remetente_nome=
         "sender_color": cor_remetente,
         "content": mensagem_texto,
         "is_system": is_sistema,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "badge": badge_val
     }
     broadcast_incremental(payload, sala_alvo=sala_alvo)
 
@@ -517,15 +537,29 @@ def gerenciar_cliente(cliente_socket, endereco):
     empurrar_estado_inicial(cliente_socket, nome)
     
     # Envia o histórico de mensagens inicial do #geral
+    conn = obter_conexao()
+    c = conn.cursor()
+    c.execute("SELECT dono FROM salas_config WHERE sala = '#geral'")
+    row_d = c.fetchone()
+    dono_sala_padrao = row_d[0] if row_d else "admin"
+    conn.close()
+
     historico = buscar_historico(sala_inicial)
     if historico:
         msgs_envio = []
         for msg in historico:
+            h_data, h_remetente, h_msg, h_cor, h_role = msg[0], msg[1], msg[2], msg[3], msg[4]
+            h_badge = ""
+            if h_role == 'admin':
+                h_badge = "⭐ Admin"
+            elif h_remetente == dono_sala_padrao:
+                h_badge = "👑 Dono"
             msgs_envio.append({
-                "timestamp": msg[0],
-                "sender": msg[1],
-                "content": msg[2],
-                "sender_color": msg[3] if msg[3] else "#000000"
+                "timestamp": h_data,
+                "sender": h_remetente,
+                "content": h_msg,
+                "sender_color": h_cor if h_cor else "#000000",
+                "badge": h_badge
             })
         enviar_json(cliente_socket, {
             "type": "history",
@@ -738,21 +772,6 @@ def gerenciar_cliente(cliente_socket, endereco):
                 else:
                     historico = buscar_historico(nova_sala)
                     
-                if historico:
-                    msgs_envio = []
-                    for msg in historico:
-                        msgs_envio.append({
-                            "timestamp": msg[0],
-                            "sender": msg[1],
-                            "content": msg[2],
-                            "sender_color": msg[3] if msg[3] else "#000000"
-                        })
-                    enviar_json(cliente_socket, {
-                        "type": "history",
-                        "room": nova_sala,
-                        "messages": msgs_envio
-                    })
-                
                 # Envia o dono atual da sala para atualizar os cargos na UI
                 dono_sala = "admin"
                 if not is_dm:
@@ -763,6 +782,29 @@ def gerenciar_cliente(cliente_socket, endereco):
                     if row_d:
                         dono_sala = row_d[0]
                     conn.close()
+
+                if historico:
+                    msgs_envio = []
+                    for msg in historico:
+                        h_data, h_remetente, h_msg, h_cor, h_role = msg[0], msg[1], msg[2], msg[3], msg[4]
+                        h_badge = ""
+                        if not is_dm:
+                            if h_role == 'admin':
+                                h_badge = "⭐ Admin"
+                            elif h_remetente == dono_sala:
+                                h_badge = "👑 Dono"
+                        msgs_envio.append({
+                            "timestamp": h_data,
+                            "sender": h_remetente,
+                            "content": h_msg,
+                            "sender_color": h_cor if h_cor else "#000000",
+                            "badge": h_badge
+                        })
+                    enviar_json(cliente_socket, {
+                        "type": "history",
+                        "room": nova_sala,
+                        "messages": msgs_envio
+                    })
                     
                 usuarios_sala_lista = []
                 with clientes_lock:
@@ -1451,6 +1493,25 @@ def gerenciar_cliente(cliente_socket, endereco):
                         })
                     else:
                         salvar_mensagem(room_share, nome, f"[FILE_SHARE]:{filename}:{file_data}")
+                        
+                        dono_sala = "admin"
+                        try:
+                            conn_fs = obter_conexao()
+                            c_fs = conn_fs.cursor()
+                            c_fs.execute("SELECT dono FROM salas_config WHERE sala = ?", (room_share,))
+                            row_fs = c_fs.fetchone()
+                            if row_fs:
+                                dono_sala = row_fs[0]
+                            conn_fs.close()
+                        except:
+                            pass
+                            
+                        badge_val = ""
+                        if role == 'admin':
+                            badge_val = "⭐ Admin"
+                        elif nome == dono_sala:
+                            badge_val = "👑 Dono"
+
                         broadcast_incremental({
                             "type": "file_share",
                             "room": room_share,
@@ -1458,7 +1519,8 @@ def gerenciar_cliente(cliente_socket, endereco):
                             "sender_color": cor,
                             "filename": filename,
                             "data": file_data,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "badge": badge_val
                         }, sala_alvo=room_share)
 
             elif tipo == "search_history":
