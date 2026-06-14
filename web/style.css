@@ -1,8 +1,8 @@
-/* Configuração e Reset de Estilos Retrô */
+/* Reset Geral & Tipografia Retro */
 * {
     box-sizing: border-box;
-    font-family: "MS Sans Serif", "Tahoma", "Courier New", monospace;
-    font-size: 12px;
+    font-family: "MS Sans Serif", "Tahoma", "Arial", sans-serif;
+    font-size: 11px;
     image-rendering: pixelated;
 }
 
@@ -11,8 +11,9 @@ body, html {
     padding: 0;
     width: 100%;
     height: 100%;
-    background-color: #55aaaa; /* Verde-azulado clássico da área de trabalho do Win98 */
+    background-color: #55aaaa; /* Verde-azulado clássico do Win98 */
     overflow: hidden;
+    color: #000000;
 }
 
 /* Scrollbar Clássica do Windows 98 */
@@ -27,14 +28,14 @@ body, html {
 ::-webkit-scrollbar-thumb {
     background: #c0c0c0;
     border: 2px solid;
-    border-color: #fff #808080 #808080 #fff;
+    border-color: #ffffff #808080 #808080 #ffffff;
 }
 ::-webkit-scrollbar-button {
     background: #c0c0c0;
     width: 16px;
     height: 16px;
     border: 2px solid;
-    border-color: #fff #808080 #808080 #fff;
+    border-color: #ffffff #808080 #808080 #ffffff;
     display: block;
 }
 
@@ -57,10 +58,10 @@ body, html {
 
 /* A Janela Clássica do Windows 98 */
 .window {
-    background: #c0c0c0;
+    background: #d4d0c8; /* Cinza clássico da Microsoft */
     border: 2px solid;
-    border-color: #fff #808080 #808080 #fff;
-    box-shadow: 1px 1px 0 #000;
+    border-color: #ffffff #404040 #404040 #ffffff;
+    box-shadow: inset 1px 1px 0 #dfdfdf, inset -1px -1px 0 #808080;
     padding: 3px;
     display: flex;
     flex-direction: column;
@@ -74,7 +75,7 @@ body, html {
 /* Barra de Título */
 .title-bar {
     background: linear-gradient(90deg, #000080, #1084d0);
-    color: white;
+    color: #ffffff;
     padding: 3px 6px;
     display: flex;
     align-items: center;
@@ -87,6 +88,9 @@ body, html {
     display: flex;
     align-items: center;
     gap: 4px;
+}
+.title-icon {
+    font-size: 13px;
 }
 .title-bar-controls {
     display: flex;
@@ -101,15 +105,15 @@ body, html {
     align-items: center;
     justify-content: center;
     border: 1px solid;
-    border-color: #fff #808080 #808080 #fff;
-    background: #c0c0c0;
+    border-color: #ffffff #808080 #808080 #ffffff;
+    background: #d4d0c8;
     cursor: pointer;
     font-size: 9px;
     font-weight: bold;
-    color: black;
+    color: #000000;
 }
 .title-bar-controls button:active {
-    border-color: #808080 #fff #fff #808080;
+    border-color: #808080 #ffffff #ffffff #808080;
 }
 .title-bar-controls button[disabled] {
     opacity: 0.5;
@@ -121,13 +125,13 @@ button[aria-label="Close"]::after { content: "✕"; }
 button[aria-label="Minimize"]::after { content: "🗕"; }
 button[aria-label="Maximize"]::after { content: "🗖"; }
 
-/* Barra de Menus */
+/* Barra de Menus Clássica */
 .menu-bar {
     list-style: none;
     margin: 0;
     padding: 2px 6px;
     display: flex;
-    background: #c0c0c0;
+    background: #d4d0c8;
     border-bottom: 2px solid #808080;
     gap: 12px;
     user-select: none;
@@ -141,21 +145,21 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
 }
 .menu-bar li:hover {
     background: #000080;
-    color: white;
+    color: #ffffff;
 }
 .menu-dropdown {
     display: none;
     position: absolute;
     top: 100%;
     left: 0;
-    background: #c0c0c0;
+    background: #d4d0c8;
     border: 2px solid;
-    border-color: #fff #808080 #808080 #fff;
+    border-color: #ffffff #808080 #808080 #ffffff;
     list-style: none;
     margin: 0;
     padding: 2px;
     min-width: 150px;
-    color: black;
+    color: #000000;
     box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
 }
 .menu-dropdown li {
@@ -163,7 +167,7 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
 }
 .menu-dropdown li:hover {
     background: #000080;
-    color: white;
+    color: #ffffff;
 }
 .menu-bar li:hover .menu-dropdown {
     display: block;
@@ -181,7 +185,7 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
     padding: 4px 0 0 0;
 }
 
-/* Workspace Central */
+/* Workspace Central (Layout de 3 Colunas) */
 .workspace {
     display: flex;
     flex: 1;
@@ -189,24 +193,24 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
     overflow: hidden;
 }
 
-/* Painéis */
+/* Painéis com Borda Sunken (Afundada) */
 .panel {
     display: flex;
     flex-direction: column;
     border: 2px solid;
-    border-color: #808080 #fff #fff #808080; /* Baixado/Sunken */
-    background: #c0c0c0;
+    border-color: #808080 #ffffff #ffffff #808080;
+    background: #d4d0c8;
     overflow: hidden;
 }
 .panel-header {
     background: #000080;
-    color: white;
+    color: #ffffff;
     padding: 3px 6px;
     font-weight: bold;
     user-select: none;
 }
 .panel-content {
-    background: white;
+    background: #ffffff;
     flex: 1;
     overflow-y: auto;
 }
@@ -216,23 +220,27 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
 
 /* Coluna Esquerda: Abas */
 .sidebar-left {
-    width: 140px;
+    width: 150px;
     min-width: 100px;
 }
 
 /* Coluna Central: Chat */
 .chat-area {
-    flex: 1;
+    flex: 2;
 }
 .chat-messages {
     padding: 8px;
     display: flex;
     flex-direction: column;
     gap: 2px;
+    background: #ffffff;
+    /* Stack de fontes para renderizar emojis coloridos */
     font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "MS Sans Serif", sans-serif;
 }
+
+/* Input de Texto na Base */
 .chat-input-row {
-    background: #c0c0c0;
+    background: #d4d0c8;
     padding: 6px 4px;
     display: flex;
     gap: 4px;
@@ -241,18 +249,16 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
 .chat-input-row input {
     flex: 1;
     border: 2px solid;
-    border-color: #808080 #fff #fff #808080;
+    border-color: #808080 #ffffff #ffffff #808080;
     padding: 4px 6px;
     font-family: inherit;
-}
-.chat-input-row input:focus {
     outline: none;
 }
 
 /* Coluna Direita: Amigos e Usuários */
 .sidebar-right {
-    width: 180px;
-    min-width: 130px;
+    width: 200px;
+    min-width: 150px;
 }
 .users-panel {
     flex: 3;
@@ -261,37 +267,47 @@ button[aria-label="Maximize"]::after { content: "🗖"; }
     flex: 2;
 }
 
-/* Modais de diálogos de tamanho fixo */
+/* Diálogos / Popups */
 .dialog-overlay .window {
-    box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
+    box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.4);
 }
 
-/* Componentes de Formulário Comuns */
+/* Botões do Windows 98 (Outset/Inset 3D) */
 button {
-    background: #c0c0c0;
+    background: #d4d0c8;
     border: 2px solid;
-    border-color: #fff #808080 #808080 #fff;
-    padding: 3px 10px;
+    border-color: #ffffff #555555 #555555 #ffffff;
+    padding: 3px 12px;
     cursor: pointer;
     font-family: inherit;
+    outline: none;
 }
 button:active {
-    border-color: #808080 #fff #fff #808080;
+    border-color: #555555 #ffffff #ffffff #555555;
+    padding: 4px 11px 2px 13px; /* Deslocamento de clique clássico */
 }
 button.default-btn {
     font-weight: bold;
 }
+button:disabled {
+    color: #808080;
+    text-shadow: 1px 1px 0 #ffffff;
+    cursor: default;
+}
+
+/* Inputs de formulário clássicos */
 input[type="text"], input[type="password"], select {
     border: 2px solid;
-    border-color: #808080 #fff #fff #808080;
+    border-color: #808080 #ffffff #ffffff #808080;
     padding: 3px 6px;
-    background: white;
+    background: #ffffff;
     font-family: inherit;
+    outline: none;
 }
 .field-row-stacked {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
 }
 .field-row {
     display: flex;
@@ -299,12 +315,12 @@ input[type="text"], input[type="password"], select {
     gap: 8px;
 }
 
-/* Listas / Árvores */
+/* Árvore / Listagem */
 .tree-view {
     list-style: none;
     margin: 0;
     padding: 0;
-    background: white;
+    background: #ffffff;
 }
 .tree-view li {
     padding: 3px 6px;
@@ -315,17 +331,21 @@ input[type="text"], input[type="password"], select {
     user-select: none;
 }
 .tree-view li:hover {
-    background: #e0e0e0;
+    background: #e0dfdb;
 }
 .tree-view li.active {
     background: #000080;
-    color: white;
+    color: #ffffff;
 }
 .tree-view li.unread {
     font-weight: bold;
+    color: #000080;
+}
+.tree-view li.active.unread {
+    color: #ffffff;
 }
 
-/* Estilização de Usuário na lista */
+/* Componentes de Status dos Usuários (Bolinha colorida) */
 .user-item {
     display: flex;
     align-items: center;
@@ -336,13 +356,14 @@ input[type="text"], input[type="password"], select {
     height: 8px;
     border-radius: 50%;
     display: inline-block;
+    border: 1px solid #404040;
 }
 .user-dot.online { background: #00ff00; }
 .user-dot.offline { background: #808080; }
 .user-dot.ausente { background: #ffaa00; }
 .user-dot.ocupado { background: #ff0000; }
 
-/* Mensagens de Chat */
+/* Mensagens de Conversa */
 .msg-line {
     line-height: 1.4;
     word-break: break-all;
@@ -350,7 +371,7 @@ input[type="text"], input[type="password"], select {
 }
 .msg-time {
     color: #808080;
-    font-size: 11px;
+    font-size: 10px;
     margin-right: 4px;
 }
 .msg-sender {
@@ -358,12 +379,12 @@ input[type="text"], input[type="password"], select {
     margin-right: 4px;
 }
 .msg-badge {
-    font-size: 11px;
+    font-size: 9px;
     font-weight: bold;
     padding: 1px 3px;
     border: 1px solid #808080;
-    background: #e0e0e0;
-    color: #555;
+    background: #e0dfdb;
+    color: #404040;
     margin-right: 4px;
 }
 .msg-system {
@@ -374,19 +395,19 @@ input[type="text"], input[type="password"], select {
     color: #800080;
 }
 
-/* Barra de Status */
+/* Barra de Status Inferior (Rodapé) */
 .status-bar {
     display: flex;
-    background: #c0c0c0;
+    background: #d4d0c8;
     margin-top: 4px;
     gap: 2px;
     padding: 2px;
-    border-top: 1px solid #fff;
+    border-top: 1px solid #ffffff;
     user-select: none;
 }
 .status-bar-field {
     border: 2px solid;
-    border-color: #808080 #fff #fff #808080;
+    border-color: #808080 #ffffff #ffffff #808080;
     margin: 0;
     padding: 2px 6px;
     flex: 1;
@@ -401,10 +422,25 @@ input[type="text"], input[type="password"], select {
     flex: 0 0 auto !important;
 }
 
-/* Tabela de exploração */
+/* Seletor de Cores Windows 98 */
+input[type="color"] {
+    background: #d4d0c8;
+    border: 2px solid;
+    border-color: #ffffff #808080 #808080 #ffffff;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 1px;
+}
+input[type="color"]::-webkit-color-swatch {
+    border: 1px solid #808080;
+}
+
+/* Tabela do Explorador de Salas */
 #explore-rooms-list tr:hover {
     background: #000080;
-    color: white;
+    color: #ffffff;
     cursor: pointer;
 }
 #explore-rooms-list td {
@@ -412,4 +448,24 @@ input[type="text"], input[type="password"], select {
 }
 .rooms-container td, .rooms-container th {
     border: 1px solid #dfdfdf;
+}
+
+/* Animação Nudge Shake (Tremor) */
+.nudge-shake {
+    animation: shake 0.5s;
+    animation-iteration-count: 1;
+}
+
+@keyframes shake {
+    0% { transform: translate(1px, 1px) rotate(0deg); }
+    10% { transform: translate(-1px, -2px) rotate(-1deg); }
+    20% { transform: translate(-3px, 0px) rotate(1deg); }
+    30% { transform: translate(0px, 2px) rotate(0deg); }
+    40% { transform: translate(1px, -1px) rotate(1deg); }
+    50% { transform: translate(-1px, 2px) rotate(-1deg); }
+    60% { transform: translate(-3px, 1px) rotate(0deg); }
+    70% { transform: translate(2px, 1px) rotate(-1deg); }
+    80% { transform: translate(-1px, -1px) rotate(1deg); }
+    90% { transform: translate(2px, 2px) rotate(0deg); }
+    100% { transform: translate(1px, -2px) rotate(-1deg); }
 }

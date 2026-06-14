@@ -8,11 +8,13 @@
 </head>
 <body>
 
-<!-- Janela de Login / Registro -->
+<!-- Janela de Login / Registro (Prompt de Sistema) -->
 <div id="login-modal" class="modal-overlay">
     <div class="window" style="width: 320px;">
         <div class="title-bar">
-            <div class="title-bar-text">ChatPy - Conectar</div>
+            <div class="title-bar-text">
+                <span class="title-icon">📁</span> ChatPy - Conectar
+            </div>
             <div class="title-bar-controls">
                 <button aria-label="Minimize" disabled></button>
                 <button aria-label="Maximize" disabled></button>
@@ -20,9 +22,9 @@
             </div>
         </div>
         <div class="window-body">
-            <div style="text-align: center; margin-bottom: 15px;">
-                <h2 style="margin: 0; font-family: monospace; letter-spacing: 2px; color: #000080;">ChatPy v2.0</h2>
-                <small style="color: #555;">Cliente WebSockets Retrô</small>
+            <div style="text-align: center; margin-bottom: 15px; padding: 10px; background: #000080; border: 2px solid; border-color: #808080 #fff #fff #808080;">
+                <h2 style="margin: 0; font-family: monospace; letter-spacing: 2px; color: #ffffff;">ChatPy v2.0</h2>
+                <small style="color: #dfdfdf;">Cliente WebSockets Retrô</small>
             </div>
             
             <div class="field-row-stacked" style="margin-bottom: 10px;">
@@ -34,7 +36,7 @@
                 <input id="login-password" type="password" placeholder="Senha..." />
             </div>
 
-            <div id="login-status" class="status-msg" style="min-height: 18px; margin-bottom: 10px; color: #a00; font-size: 11px;"></div>
+            <div id="login-status" class="status-msg" style="min-height: 18px; margin-bottom: 10px; color: #800000; font-weight: bold; font-size: 11px;"></div>
 
             <div class="field-row" style="justify-content: flex-end; gap: 8px;">
                 <button id="btn-login" class="default-btn" onclick="fazerLogin()">Entrar</button>
@@ -47,7 +49,9 @@
 <!-- Janela Principal do Chat (mIRC Style) -->
 <div id="main-app" class="window main-window" style="display: none;">
     <div class="title-bar">
-        <div class="title-bar-text" id="app-title">ChatPy - mIRC [conectando...]</div>
+        <div class="title-bar-text" id="app-title">
+            <span class="title-icon">💬</span> ChatPy - mIRC [conectando...]
+        </div>
         <div class="title-bar-controls">
             <button aria-label="Minimize" onclick="minimizarJanela()"></button>
             <button aria-label="Maximize" onclick="maximizarJanela()"></button>
@@ -101,7 +105,7 @@
                 <!-- Input de Mensagem -->
                 <div class="chat-input-row">
                     <input type="text" id="chat-input" placeholder="Digite uma mensagem ou comando..." onkeydown="detectarEnter(event)" oninput="registrarDigitando()" />
-                    <button id="btn-send" onclick="enviarMensagemAtual()">Enviar</button>
+                    <button id="btn-send" class="default-btn" onclick="enviarMensagemAtual()">Enviar</button>
                 </div>
             </div>
 
@@ -114,15 +118,15 @@
                     </ul>
                 </div>
                 
-                <div class="panel-header" style="border-top: 2px solid #dfdfdf;">Amigos Online</div>
+                <div class="panel-header" style="border-top: 2px solid #fff;">Amigos Online</div>
                 <div class="panel-content scrollable friends-panel">
                     <ul id="friends-list" class="tree-view">
                         <!-- Lista de amigos -->
                     </ul>
                 </div>
 
-                <div id="friend-requests-box" class="requests-panel" style="display: none; padding: 4px; border-top: 2px solid #dfdfdf;">
-                    <div style="font-weight: bold; margin-bottom: 2px;">Convites:</div>
+                <div id="friend-requests-box" class="requests-panel" style="display: none; padding: 4px; border-top: 2px solid #fff;">
+                    <div style="font-weight: bold; margin-bottom: 2px; color: #000080;">Convites Pendentes:</div>
                     <ul id="requests-list" style="list-style: none; padding: 0; margin: 0;">
                         <!-- Convites pendentes -->
                     </ul>
@@ -135,7 +139,7 @@
         <div class="status-bar">
             <p class="status-bar-field" id="status-user">Usuário: -</p>
             <p class="status-bar-field" id="status-room">Sala: #geral</p>
-            <p class="status-bar-field" id="status-typing" style="flex: 2;"></p>
+            <p class="status-bar-field" id="status-typing" style="flex: 2; color: #000080; font-weight: bold;"></p>
             
             <!-- Seletor de Status Retrô -->
             <div class="status-bar-field status-selectors">
@@ -175,7 +179,7 @@
                 <input id="new-room-pass" type="password" placeholder="Sem senha" />
             </div>
             <div class="field-row" style="justify-content: flex-end; gap: 6px;">
-                <button onclick="confirmarCriarSala()">Criar</button>
+                <button class="default-btn" onclick="confirmarCriarSala()">Criar</button>
                 <button onclick="fecharDialog('dialog-create-room')">Cancelar</button>
             </div>
         </div>
@@ -192,14 +196,14 @@
             </div>
         </div>
         <div class="window-body">
-            <p style="margin: 0 0 8px 0;">Salas ativas no servidor:</p>
-            <div class="rooms-container" style="border: 2px solid #808080; background: #fff; height: 180px; overflow-y: auto;">
-                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 12px;">
+            <p style="margin: 0 0 8px 0;">Salas ativas no servidor (duplo clique para entrar):</p>
+            <div class="rooms-container" style="border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; height: 180px; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 11px;">
                     <thead>
-                        <tr style="background: #c0c0c0; border-bottom: 1px solid #808080; position: sticky; top: 0;">
-                            <th style="padding: 4px;">Sala</th>
-                            <th style="padding: 4px;">Usuários</th>
-                            <th style="padding: 4px;">Protegida</th>
+                        <tr style="background: #c0c0c0; border-bottom: 2px solid #808080; position: sticky; top: 0;">
+                            <th style="padding: 4px; border-right: 1px solid #dfdfdf;">Sala</th>
+                            <th style="padding: 4px; border-right: 1px solid #dfdfdf;">Usuários</th>
+                            <th style="padding: 4px; border-right: 1px solid #dfdfdf;">Protegida</th>
                             <th style="padding: 4px;">Ação</th>
                         </tr>
                     </thead>
@@ -210,7 +214,7 @@
             </div>
             <div class="field-row" style="justify-content: space-between; margin-top: 10px;">
                 <button onclick="atualizarExplorarSalas()">Atualizar</button>
-                <button onclick="fecharDialog('dialog-explore-rooms')">Fechar</button>
+                <button class="default-btn" onclick="fecharDialog('dialog-explore-rooms')">Fechar</button>
             </div>
         </div>
     </div>
@@ -231,7 +235,7 @@
                 <input id="room-pass-input" type="password" placeholder="Senha" autofocus />
             </div>
             <div class="field-row" style="justify-content: flex-end; gap: 6px;">
-                <button id="btn-password-submit">Entrar</button>
+                <button id="btn-password-submit" class="default-btn">Entrar</button>
                 <button onclick="fecharDialog('dialog-room-password')">Cancelar</button>
             </div>
         </div>
@@ -252,18 +256,18 @@
                 <label for="friend-add-input">Adicionar Amigo (Nome):</label>
                 <div class="field-row">
                     <input id="friend-add-input" type="text" style="flex: 1;" />
-                    <button onclick="enviarConviteAmigo()">Enviar</button>
+                    <button class="default-btn" onclick="enviarConviteAmigo()">Enviar</button>
                 </div>
             </div>
             <hr style="border: 1px inset #fff; margin: 12px 0;" />
-            <div style="font-weight: bold; margin-bottom: 4px;">Amigos Atuais:</div>
-            <div style="border: 2px solid #808080; background: #fff; height: 120px; overflow-y: auto;">
+            <div style="font-weight: bold; margin-bottom: 4px; color: #000080;">Amigos Atuais:</div>
+            <div style="border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; height: 120px; overflow-y: auto;">
                 <ul id="friends-manage-list" style="list-style: none; padding: 0; margin: 0; font-size: 12px;">
                     <!-- Gerado dinamicamente -->
                 </ul>
             </div>
             <div class="field-row" style="justify-content: flex-end; margin-top: 10px;">
-                <button onclick="fecharDialog('dialog-friends')">Fechar</button>
+                <button class="default-btn" onclick="fecharDialog('dialog-friends')">Fechar</button>
             </div>
         </div>
     </div>

@@ -15,17 +15,46 @@ let isTyping = false;
 
 // Inicializa a interface
 document.addEventListener('DOMContentLoaded', () => {
-    // Foco inicial no campo de login
     const usernameInput = document.getElementById('login-username');
     if (usernameInput) usernameInput.focus();
     
-    // Captura enter no login
+    // Captura Enter nos campos de login
     document.getElementById('login-username').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
     document.getElementById('login-password').addEventListener('keypress', (e) => { if(e.key === 'Enter') fazerLogin(); });
 });
 
+// Função para reproduzir um bip de MSN Nudge clássico offline (Web Audio API)
+function tocarBipeNudge() {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // Oscilador para produzir o bip clássico
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(600, audioCtx.currentTime); // Frequência do MSN nudge
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        
+        oscillator.start();
+        setTimeout(() => {
+            oscillator.stop();
+            audioCtx.close();
+        }, 250);
+    } catch (e) {
+        console.error("Audio Context não suportado ou bloqueado pelo navegador:", e);
+    }
+}
+
 // --- PONTE PYTHON -> JAVASCRIPT ---
-// Chamadas que o Python (cliente_gui.py) fará via evaluate_js
+// Chamadas obrigatórias que o Python (cliente_gui.py) fará via evaluate_js
+
+window.exibirAlerta = function(mensagem) {
+    alert(mensagem);
+};
 
 window.autenticacaoResposta = function(dados) {
     const status = dados.status;
@@ -37,23 +66,19 @@ window.autenticacaoResposta = function(dados) {
         myColor = dados.color || '#000000';
         myRole = dados.role || 'user';
         
-        // Esconde modal de login e exibe o app
+        // Esconde modal de login e exibe a tela de chat
         document.getElementById('login-modal').style.display = 'none';
         document.getElementById('main-app').style.display = 'flex';
         
-        // Atualiza rodapé
+        // Atualiza campos de rodapé
         document.getElementById('status-user').textContent = `Usuário: ${currentUsername}`;
         document.getElementById('color-select').value = myColor;
         
-        // Solicita o estado inicial ao motor
+        // Solicita o estado geral ao motor do Python
         window.pywebview.api.request_state();
     } else {
         statusEl.textContent = msg;
     }
-};
-
-window.exibirAlerta = function(mensagem) {
-    alert(mensagem);
 };
 
 window.atualizarEstadoGeral = function(dados) {
@@ -68,9 +93,9 @@ window.atualizarEstadoGeral = function(dados) {
     renderizarConvites();
 };
 
-window.atualizarListaUsuarios = function(sala, usuarios) {
-    if (sala === activeTab) {
-        usersInActiveRoom = usuarios;
+window.atualizarListaUsuarios = function(room, users) {
+    if (room === activeTab) {
+        usersInActiveRoom = users;
         renderizarUsuarios();
     }
 };
@@ -101,9 +126,9 @@ window.adicionarMensagem = function(dados) {
     }
 };
 
-window.carregarHistoricoSala = function(sala, mensagens) {
-    messagesCache[sala] = [];
-    mensagens.forEach(msg => {
+window.carregarHistoricoSala = function(room, messages) {
+    messagesCache[room] = [];
+    messages.forEach(msg => {
         const formatted = formatarMensagemHtml(
             msg.timestamp, 
             msg.sender, 
@@ -112,12 +137,12 @@ window.carregarHistoricoSala = function(sala, mensagens) {
             msg.sender_color || '#000000', 
             msg.badge || ''
         );
-        messagesCache[sala].push(formatted);
+        messagesCache[room].push(formatted);
     });
     
-    if (sala === activeTab) {
+    if (room === activeTab) {
         const chatBox = document.getElementById('chat-box');
-        chatBox.innerHTML = messagesCache[sala].join('');
+        chatBox.innerHTML = messagesCache[room].join('');
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 };
@@ -139,7 +164,7 @@ window.chamarAtencaoNudge = function(dados) {
     const sender = dados.sender;
     const room = dados.room;
     
-    // Adiciona log visual
+    // Adiciona log de sistema sobre o tremor
     window.adicionarMensagem({
         room: room,
         sender: '[Sistema]',
@@ -148,17 +173,20 @@ window.chamarAtencaoNudge = function(dados) {
         timestamp: new Date().toLocaleTimeString()
     });
 
-    // Efeito tremer janela
+    // Efeito de tremor na janela principal
     const appEl = document.getElementById('main-app');
     appEl.classList.add('nudge-shake');
     setTimeout(() => appEl.classList.remove('nudge-shake'), 500);
+    
+    // Toca o bip clássico de alerta
+    tocarBipeNudge();
 };
 
-window.removerAba = function(sala) {
-    joinedRooms.delete(sala);
-    delete messagesCache[sala];
-    delete unreadCounts[sala];
-    if (activeTab === sala) {
+window.removerAba = function(room) {
+    joinedRooms.delete(room);
+    delete messagesCache[room];
+    delete unreadCounts[room];
+    if (activeTab === room) {
         selecionarAba('#geral');
     } else {
         renderizarAbas();
@@ -243,10 +271,8 @@ function renderizarAbas() {
         li.className = itemClass;
         li.textContent = room + displayUnread;
         
-        // Clique esquerdo para selecionar aba
         li.onclick = () => selecionarAba(room);
         
-        // Clique direito para fechar sala/aba (exceto geral)
         if (room !== '#geral') {
             li.oncontextmenu = (e) => {
                 e.preventDefault();
@@ -270,32 +296,26 @@ function selecionarAba(room) {
     
     document.getElementById('active-tab-title').textContent = room;
     document.getElementById('status-room').textContent = `Sala: ${room}`;
-    
-    // Limpa status digitando
     document.getElementById('status-typing').textContent = '';
     
     renderizarAbas();
     
-    // Se for sala e não estiver cadastrada localmente, entra
     if (room.startsWith('#') && !joinedRooms.has(room)) {
         joinedRooms.add(room);
         window.pywebview.api.join_room(room);
     }
     
-    // Renderiza mensagens em cache
     const chatBox = document.getElementById('chat-box');
     chatBox.innerHTML = (messagesCache[room] || []).join('');
     chatBox.scrollTop = chatBox.scrollHeight;
     
-    // Atualiza usuários da sala
     if (room.startsWith('#')) {
         window.pywebview.api.request_room_users(room);
     } else {
-        // Aba DM privada, mostra apenas o destinatário e eu
         const outroUser = room.substring(1);
         usersInActiveRoom = [
             { name: currentUsername, color: myColor, status: 'Online', badge: myRole === 'admin' ? '⭐ Admin' : '' },
-            { name: outroUser, color: '#000000', status: 'Desconhecido', badge: '' }
+            { name: outroUser, color: '#000000', status: 'Online', badge: '' }
         ];
         renderizarUsuarios();
     }
@@ -321,7 +341,6 @@ function renderizarUsuarios() {
             </div>
         `;
         
-        // Clique duplo para abrir DM
         li.ondblclick = () => {
             if (user.name !== currentUsername) {
                 abrirDM(user.name);
@@ -369,7 +388,7 @@ function renderizarConvites() {
             li.style.display = 'flex';
             li.style.justifyContent = 'space-between';
             li.style.alignItems = 'center';
-            li.style.marginBottom = '2px';
+            li.style.marginBottom = '4px';
             li.innerHTML = `
                 <span>${req}</span>
                 <div style="display:flex; gap:2px;">
@@ -400,15 +419,6 @@ function formatarMensagemHtml(timestamp, sender, content, isSystem, senderColor,
         return `<div class="msg-line msg-system">${tsStr} * ${content}</div>`;
     }
     
-    if (sender === currentUsername) {
-        return `<div class="msg-line"><span class="msg-time">${tsStr}</span>${badgeStr}<span class="msg-sender" style="color: ${senderColor};">${sender}</span>: ${content}</div>`;
-    }
-    
-    // Verifica se é DM privada
-    if (activeTab.startsWith('@')) {
-        return `<div class="msg-line msg-private"><span class="msg-time">${tsStr}</span>${badgeStr}<span class="msg-sender" style="color: ${senderColor};">${sender}</span>: ${content}</div>`;
-    }
-    
     return `<div class="msg-line"><span class="msg-time">${tsStr}</span>${badgeStr}<span class="msg-sender" style="color: ${senderColor};">${sender}</span>: ${content}</div>`;
 }
 
@@ -417,7 +427,6 @@ function enviarMensagemAtual() {
     const text = input.value.trim();
     if (!text) return;
     
-    // Tratamento de comandos locais na UI
     if (text.startsWith('/msg ')) {
         const partes = text.split(' ');
         if (partes.length >= 3) {
@@ -432,8 +441,6 @@ function enviarMensagemAtual() {
     
     input.value = '';
     input.focus();
-    
-    // Avisa que parou de digitar
     pararDigitando();
 }
 
@@ -444,7 +451,7 @@ function detectarEnter(e) {
 }
 
 function registrarDigitando() {
-    if (activeTab.startsWith('@')) return; // Sem status de digitação em DMs por simplicidade
+    if (activeTab.startsWith('@')) return;
     
     if (!isTyping) {
         isTyping = true;
@@ -473,7 +480,6 @@ function alterarCor(color) {
     window.pywebview.api.set_color(color);
 }
 
-// Dialogs
 function fecharDialog(id) {
     document.getElementById(id).style.display = 'none';
 }
@@ -502,10 +508,7 @@ function abrirExplorarSalas() {
 }
 
 function atualizarExplorarSalas() {
-    // Solicita atualização de salas ao Python
     window.pywebview.api.request_state();
-    
-    // Roda pequeno delay para carregar a resposta assíncrona do estado
     setTimeout(() => {
         const tbody = document.getElementById('explore-rooms-list');
         tbody.innerHTML = '';
@@ -519,11 +522,11 @@ function atualizarExplorarSalas() {
                 <td style="padding: 4px; font-weight: bold;">${room}</td>
                 <td style="padding: 4px;">${count}</td>
                 <td style="padding: 4px;">${isProtected}</td>
-                <td style="padding: 4px;"><button onclick="entrarNaSalaExplorador('${room}')">Entrar</button></td>
+                <td style="padding: 4px;"><button class="default-btn" onclick="entrarNaSalaExplorador('${room}')">Entrar</button></td>
             `;
             tbody.appendChild(tr);
         });
-    }, 200);
+    }, 250);
 }
 
 function entrarNaSalaExplorador(room) {
@@ -574,7 +577,7 @@ function removerAmigo(user) {
         window.pywebview.api.friend_action('remove', user);
         setTimeout(() => {
             renderizarAmigosGerenciador();
-        }, 200);
+        }, 250);
     }
 }
 
