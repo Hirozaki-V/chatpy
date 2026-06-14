@@ -15,6 +15,8 @@ engine = ChatEngine()
 window = None
 async_loop = None
 pagina_carregada = False
+last_auth_action = None
+last_auth_username = None
 
 def get_web_directory():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,8 +39,13 @@ def callback_conexao(status):
         window.evaluate_js(f"if(window.atualizarEstadoGeral) window.atualizarEstadoGeral({{}});")
 
 def callback_auth(dados):
+    global last_auth_action, last_auth_username
     if window and pagina_carregada:
-        dados_json = json.dumps(dados)
+        dados_copy = dict(dados)
+        dados_copy["action"] = last_auth_action
+        if last_auth_action == "login" and "username" not in dados_copy:
+            dados_copy["username"] = last_auth_username
+        dados_json = json.dumps(dados_copy)
         window.evaluate_js(f"if(window.autenticacaoResposta) window.autenticacaoResposta({dados_json});")
 
 def callback_mensagem(dados):
@@ -160,9 +167,15 @@ class JsApi:
             return False
 
     def login(self, username, password):
+        global last_auth_action, last_auth_username
+        last_auth_action = "login"
+        last_auth_username = username
         asyncio.run_coroutine_threadsafe(engine.login(username, password), async_loop)
 
     def registrar(self, username, password):
+        global last_auth_action, last_auth_username
+        last_auth_action = "register"
+        last_auth_username = username
         asyncio.run_coroutine_threadsafe(engine.registrar(username, password), async_loop)
 
     def enviar_mensagem(self, room, text):

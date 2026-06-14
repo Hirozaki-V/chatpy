@@ -90,8 +90,22 @@ window.autenticacaoResposta = function(dados) {
     const status = dados.status;
     const msg = dados.message;
     const statusEl = document.getElementById('login-status');
+    const action = dados.action;
     
     if (status === 'success') {
+        if (action === 'register') {
+            alert("Conta criada com sucesso! Por favor, faça login com suas novas credenciais.");
+            
+            // Limpa o campo de senha e foca nele
+            document.getElementById('login-password').value = '';
+            document.getElementById('login-password').focus();
+            
+            // Atualiza status do login com cor verde retrô para sucesso
+            statusEl.textContent = 'Conta registrada com sucesso. Faça o login.';
+            statusEl.style.color = '#008000';
+            return;
+        }
+        
         currentUsername = dados.username;
         myColor = dados.color || '#000000';
         myRole = dados.role || 'user';
@@ -108,6 +122,7 @@ window.autenticacaoResposta = function(dados) {
         window.pywebview.api.request_state();
     } else {
         statusEl.textContent = msg;
+        statusEl.style.color = '#800000';
     }
 };
 
@@ -246,23 +261,27 @@ function fazerLogin() {
     const porta = document.getElementById('server-port').value.trim();
     const user = document.getElementById('login-username').value.trim();
     const pass = document.getElementById('login-password').value.trim();
+    const statusEl = document.getElementById('login-status');
+    
+    // Reseta cor para vermelho padrão
+    statusEl.style.color = '#800000';
     
     if(!user || !pass || !ip || !porta) {
-        document.getElementById('login-status').textContent = 'Preencha todos os campos.';
+        statusEl.textContent = 'Preencha todos os campos.';
         return;
     }
     
-    document.getElementById('login-status').textContent = 'Conectando ao servidor...';
+    statusEl.textContent = 'Conectando ao servidor...';
     
     window.pywebview.api.conectar_servidor(ip, porta).then(success => {
         if (success) {
-            document.getElementById('login-status').textContent = 'Autenticando...';
+            statusEl.textContent = 'Autenticando...';
             window.pywebview.api.login(user, pass);
         } else {
-            document.getElementById('login-status').textContent = 'Erro ao conectar ao servidor.';
+            statusEl.textContent = 'Erro ao conectar ao servidor.';
         }
     }).catch(err => {
-        document.getElementById('login-status').textContent = 'Erro de rede na ponte API.';
+        statusEl.textContent = 'Erro de rede na ponte API.';
     });
 }
 
@@ -271,23 +290,27 @@ function fazerRegistro() {
     const porta = document.getElementById('server-port').value.trim();
     const user = document.getElementById('login-username').value.trim();
     const pass = document.getElementById('login-password').value.trim();
+    const statusEl = document.getElementById('login-status');
+    
+    // Reseta cor para vermelho padrão
+    statusEl.style.color = '#800000';
     
     if(!user || !pass || !ip || !porta) {
-        document.getElementById('login-status').textContent = 'Preencha todos os campos.';
+        statusEl.textContent = 'Preencha todos os campos.';
         return;
     }
     
-    document.getElementById('login-status').textContent = 'Conectando ao servidor...';
+    statusEl.textContent = 'Conectando ao servidor...';
     
     window.pywebview.api.conectar_servidor(ip, porta).then(success => {
         if (success) {
-            document.getElementById('login-status').textContent = 'Registrando...';
+            statusEl.textContent = 'Registrando...';
             window.pywebview.api.registrar(user, pass);
         } else {
-            document.getElementById('login-status').textContent = 'Erro ao conectar ao servidor.';
+            statusEl.textContent = 'Erro ao conectar ao servidor.';
         }
     }).catch(err => {
-        document.getElementById('login-status').textContent = 'Erro de rede na ponte API.';
+        statusEl.textContent = 'Erro de rede na ponte API.';
     });
 }
 
