@@ -137,6 +137,26 @@ def conectar(ip=None, porta=None):
         print(f"[!] Falha na conexão SSL segura com {ip}:{porta} -> {e}")
         return False
 
+def centralizar_janela(toplevel, parent):
+    toplevel.update_idletasks()
+    w = toplevel.winfo_reqwidth()
+    h = toplevel.winfo_reqheight()
+    geom = toplevel.geometry().split("+")[0]
+    if "x" in geom:
+        try:
+            partes = geom.split("x")
+            w = int(partes[0])
+            h = int(partes[1])
+        except:
+            pass
+    px = parent.winfo_rootx()
+    py = parent.winfo_rooty()
+    pw = parent.winfo_width()
+    ph = parent.winfo_height()
+    dx = px + (pw - w) // 2
+    dy = py + (ph - h) // 2
+    toplevel.geometry(f"{w}x{h}+{dx}+{dy}")
+
 # =========================================================
 # MODO JANELA (GUI PRINCIPAL E RESPONSIVA)
 # =========================================================
@@ -182,6 +202,7 @@ def iniciar_modo_gui(janela):
     
     user_role = "user"
     dono_sala_atual = "admin"
+    atualizar_painel_moderacao = None
     
     fila_rede = queue.Queue()
     
@@ -253,12 +274,13 @@ def iniciar_modo_gui(janela):
     janela.bind("<FocusOut>", on_focus_out)
 
     def fechar_aplicativo():
-        try:
-            cliente_socket.close()
-        except:
-            pass
-        janela.destroy()
-        sys.exit(0)
+        if messagebox.askokcancel("Sair", "Deseja realmente fechar o ChatPy?"):
+            try:
+                cliente_socket.close()
+            except:
+                pass
+            janela.destroy()
+            sys.exit(0)
     janela.protocol("WM_DELETE_WINDOW", fechar_aplicativo)
 
     def salvar_log_local(sala, texto):
@@ -283,14 +305,7 @@ def iniciar_modo_gui(janela):
         dialog.transient(janela)
         dialog.grab_set()
         
-        janela.update_idletasks()
-        px = janela.winfo_rootx()
-        py = janela.winfo_rooty()
-        pw = janela.winfo_width()
-        ph = janela.winfo_height()
-        dx = px + (pw - 380) // 2
-        dy = py + (ph - 150) // 2
-        dialog.geometry(f"380x150+{dx}+{dy}")
+        centralizar_janela(dialog, janela)
         
         frame = tk.Frame(dialog, padx=15, pady=15)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -396,7 +411,9 @@ def iniciar_modo_gui(janela):
         reg_janela.geometry("350x300")
         reg_janela.resizable(False, False)
         reg_janela.transient(janela)
-        reg_janela.grab_set() 
+        reg_janela.grab_set()
+        
+        centralizar_janela(reg_janela, janela)
         
         frame_reg = tk.Frame(reg_janela, padx=20, pady=20)
         frame_reg.pack(fill=tk.BOTH, expand=True)
@@ -585,6 +602,8 @@ def iniciar_modo_gui(janela):
                 prefixo = f"[{remetente}]: "
                 corpo = texto.replace(prefixo, "", 1) if texto.startswith(prefixo) else texto
                 
+                agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                caixa_texto.insert(tk.END, f"[{agora}] ")
                 caixa_texto.insert(tk.END, prefixo, tag_name)
                 inserir_com_markdown(caixa_texto, corpo + "\n")
             else:
@@ -694,8 +713,10 @@ def iniciar_modo_gui(janela):
                 btn_ban.config(state=tk.DISABLED)
             
             atualizar_listbox_abertas()
+            if atualizar_painel_moderacao:
+                atualizar_painel_moderacao()
 
-    def inserir_arquivo_no_chat(nome_sala, remetente, cor_remetente, filename, b64_data):
+    def inserir_arquivo_no_chat(nome_sala, remetente, cor_remetente, filename, b64_data, timestamp=None):
         try:
             caixa_texto = abas.get(nome_sala)
             if not caixa_texto: return
@@ -706,6 +727,11 @@ def iniciar_modo_gui(janela):
             
             tag_remetente = f"tag_{remetente}_{cor_remetente.replace('#', '')}"
             caixa_texto.tag_config(tag_remetente, foreground=cor_remetente, font=("Consolas", 10, "bold"))
+            
+            if not timestamp:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+            caixa_texto.insert(tk.END, f"[{timestamp}] ")
             caixa_texto.insert(tk.END, f"[{remetente}]: ", tag_remetente)
             
             # Tenta renderizar miniatura primeiro se for imagem
@@ -751,23 +777,24 @@ def iniciar_modo_gui(janela):
     def tremer_janela():
         if nudge_desativado:
             return
-        geom = janela.geometry()
         try:
-            partes = geom.split('+')
-            if len(partes) == 3:
-                size = partes[0]
-                orig_x = int(partes[1])
-                orig_y = int(partes[2])
+            orig_w = janela.winfo_width()
+            orig_h = janela.winfo_height()
+            orig_x = janela.winfo_x()
+            orig_y = janela.winfo_y()
+            
+            if orig_w <= 1 or orig_h <= 1:
+                return
                 
-                def shake(step=0):
-                    if step >= 20:
-                        janela.geometry(f"{size}+{orig_x}+{orig_y}")
-                        return
-                    dx = 12 if step % 2 == 0 else -12
-                    dy = 6 if step % 4 < 2 else -6
-                    janela.geometry(f"{size}+{orig_x + dx}+{orig_y + dy}")
-                    janela.after(50, lambda: shake(step + 1))
-                shake()
+            def shake(step=0):
+                if step >= 20:
+                    janela.geometry(f"{orig_w}x{orig_h}+{orig_x}+{orig_y}")
+                    return
+                dx = 12 if step % 2 == 0 else -12
+                dy = 6 if step % 4 < 2 else -6
+                janela.geometry(f"{orig_w}x{orig_h}+{orig_x + dx}+{orig_y + dy}")
+                janela.after(50, lambda: shake(step + 1))
+            shake()
         except:
             pass
 
@@ -827,6 +854,16 @@ def iniciar_modo_gui(janela):
 
             elif tipo == "room_deleted":
                 room = dados.get("room")
+                if listbox_salas:
+                    for i in range(listbox_salas.size()):
+                        try:
+                            val = listbox_salas.get(i)
+                            val_clean = val.replace("🔴 ", "").replace("📌", "").replace("🔒", "").split(' ')[0].strip()
+                            if val_clean == room:
+                                listbox_salas.delete(i)
+                                break
+                        except:
+                            pass
                 for tab_id in notebook.tabs():
                     tab_txt = notebook.tab(tab_id, "text").replace("🔴 ", "").replace("📌", "").replace("🔒", "").strip()
                     if tab_txt == room:
@@ -837,6 +874,10 @@ def iniciar_modo_gui(janela):
                 if sala_atual == room:
                     criar_aba("#geral")
                 atualizar_listbox_abertas()
+                if "salas_fixadas" in config_local:
+                    if room in config_local["salas_fixadas"]:
+                        config_local["salas_fixadas"].remove(room)
+                        salvar_config_local(config_local)
 
             elif tipo == "banned_users_list":
                 users_banned = dados.get("users", [])
@@ -1103,6 +1144,9 @@ def iniciar_modo_gui(janela):
                     listbox_usuarios.delete(0, tk.END)
                     for u in r_users:
                         listbox_usuarios.insert(tk.END, f"{u.get('name')} ({u.get('status')})")
+                
+                if atualizar_painel_moderacao:
+                    atualizar_painel_moderacao()
 
             elif tipo == "state_update":
                 dono_sala_atual = dados.get("room_owner", "admin")
@@ -1159,6 +1203,9 @@ def iniciar_modo_gui(janela):
                         name = f_info.get("name")
                         pres = f_info.get("status") if f_info.get("online") else "Offline"
                         listbox_amigos.insert(tk.END, f"{name} ({pres})")
+                        
+                if atualizar_painel_moderacao:
+                    atualizar_painel_moderacao()
                         
             elif tipo == "typing_status":
                 user = dados.get("user")
@@ -1218,7 +1265,6 @@ def iniciar_modo_gui(janela):
                     caixa_texto = abas[room]
                     caixa_texto.config(state=tk.NORMAL)
                     caixa_texto.delete("1.0", tk.END)
-                    caixa_texto.insert(tk.END, f"--- Últimas mensagens de {room} ---\n")
                     for msg in dados.get("messages", []):
                         sender = msg.get("sender")
                         sender_color = msg.get("sender_color", "#000000")
@@ -1230,7 +1276,7 @@ def iniciar_modo_gui(janela):
                                 partes = content.split(":", 2)
                                 filename = partes[1]
                                 b64_data = partes[2]
-                                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data)
+                                inserir_arquivo_no_chat(room, sender, sender_color, filename, b64_data, timestamp=timestamp)
                             except:
                                 caixa_texto.insert(tk.END, f"[{timestamp}] {sender}: {content}\n")
                         elif content.startswith("[FILE_SHARE_NOTIFICATION]:"):
@@ -1252,7 +1298,6 @@ def iniciar_modo_gui(janela):
                             caixa_texto.insert(tk.END, f"[{sender}]: ", tag_remetente)
                             inserir_com_markdown(caixa_texto, f"{content}\n")
                             
-                    caixa_texto.insert(tk.END, "-----------------------------------\n\n")
                     caixa_texto.config(state=tk.DISABLED)
                     caixa_texto.yview(tk.END)
                     
@@ -1735,6 +1780,8 @@ def iniciar_modo_gui(janela):
         busca_win.geometry("500x350")
         busca_win.transient(janela)
         
+        centralizar_janela(busca_win, janela)
+        
         main_f = tk.Frame(busca_win, padx=10, pady=10)
         main_f.pack(fill=tk.BOTH, expand=True)
         
@@ -1796,7 +1843,7 @@ def iniciar_modo_gui(janela):
     def construir_tela_chat():
         nonlocal notebook, listbox_salas, listbox_usuarios, listbox_amigos, listbox_convites, entry_msg
         nonlocal lbl_typing, lbl_novas_msgs, btn_emoticons, frame_chat
-        nonlocal listbox_abertas, btn_kick, btn_ban, progress_bar, cb_status
+        nonlocal listbox_abertas, btn_kick, btn_ban, progress_bar, cb_status, atualizar_painel_moderacao
         
         frame_chat = tk.Frame(janela)
         frame_chat.pack(fill=tk.BOTH, expand=True)
@@ -1828,6 +1875,8 @@ def iniciar_modo_gui(janela):
             c_win.resizable(False, False)
             c_win.transient(janela)
             c_win.grab_set()
+            
+            centralizar_janela(c_win, janela)
             
             main_cf = tk.Frame(c_win, padx=15, pady=15)
             main_cf.pack(fill=tk.BOTH, expand=True)
@@ -1863,19 +1912,12 @@ def iniciar_modo_gui(janela):
         def btn_gerenciar_salas():
             manager = tk.Toplevel(janela)
             manager.title("Gerenciar Minhas Salas")
-            manager.geometry("400x300")
+            manager.geometry("450x350")
             manager.resizable(False, False)
             manager.transient(janela)
             manager.grab_set()
             
-            janela.update_idletasks()
-            px = janela.winfo_rootx()
-            py = janela.winfo_rooty()
-            pw = janela.winfo_width()
-            ph = janela.winfo_height()
-            dx = px + (pw - 400) // 2
-            dy = py + (ph - 300) // 2
-            manager.geometry(f"400x300+{dx}+{dy}")
+            centralizar_janela(manager, janela)
             
             main_f = tk.Frame(manager, padx=15, pady=15)
             main_f.pack(fill=tk.BOTH, expand=True)
@@ -1894,7 +1936,7 @@ def iniciar_modo_gui(janela):
             scroll_minhas.pack(side=tk.RIGHT, fill=tk.Y)
             listbox_minhas.config(yscrollcommand=scroll_minhas.set)
             
-            btn_f = tk.Frame(manager, padx=10)
+            btn_f = tk.Frame(main_f, padx=10)
             btn_f.pack(side=tk.RIGHT, fill=tk.Y)
             
             def btn_excluir_minha_sala():
@@ -1929,9 +1971,7 @@ def iniciar_modo_gui(janela):
                     ban_win.transient(manager)
                     ban_win.grab_set()
                     
-                    bx = dx + (400 - 300) // 2
-                    by = dy + (300 - 250) // 2
-                    ban_win.geometry(f"300x250+{bx}+{by}")
+                    centralizar_janela(ban_win, manager)
                     
                     ban_f = tk.Frame(ban_win, padx=10, pady=10)
                     ban_f.pack(fill=tk.BOTH, expand=True)
@@ -2041,6 +2081,10 @@ def iniciar_modo_gui(janela):
         main_content = tk.Frame(frame_chat)
         main_content.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
         
+        # Sidebar à Direita
+        sidebar = tk.Frame(main_content, width=200, bg="#f0f0f0", padx=5)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        
         # Notebook (Abas) à Esquerda
         notebook = ttk.Notebook(main_content)
         notebook.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -2076,10 +2120,6 @@ def iniciar_modo_gui(janela):
         notebook.bind("<B1-Motion>", on_notebook_motion, add="+")
         notebook.bind("<ButtonRelease-1>", on_notebook_release, add="+")
         notebook.bind("<Button-3>", show_menu_abas)
-        
-        # Sidebar à Direita
-        sidebar = tk.Frame(main_content, width=200, bg="#f0f0f0", padx=5)
-        sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         
         # Drag & Drop bindings se dnd suportado
         if dnd_disponivel:
@@ -2256,14 +2296,42 @@ def iniciar_modo_gui(janela):
                         "room": sala_atual
                     })
 
+        lbl_mod_title = tk.Label(sidebar, text="🛡️ Painel de Moderação", font=("Arial", 9, "bold"), fg="#8b0000", bg="#f0f0f0")
+        lbl_mod_title.pack(anchor="w", pady=(10, 2))
+        
+        lbl_mod_help = tk.Label(sidebar, text="Selecione alguém na lista acima", font=("Arial", 8, "italic"), fg="gray", bg="#f0f0f0")
+        lbl_mod_help.pack(anchor="w")
+
         btn_mod_frame = tk.Frame(sidebar, bg="#f0f0f0")
         btn_mod_frame.pack(fill=tk.X, pady=(2, 5))
         
-        btn_kick = ttk.Button(btn_mod_frame, text="👞 Kick", command=kick_usuario_selecionado, state=tk.DISABLED, width=8)
-        btn_kick.pack(side=tk.LEFT, padx=2)
+        btn_kick = tk.Button(btn_mod_frame, text="👞 Kick", command=kick_usuario_selecionado, state=tk.DISABLED, 
+                             bg="#ffe4e1", fg="#8b0000", activebackground="#f08080", relief="groove", font=("Arial", 9, "bold"), bd=1)
+        btn_kick.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         
-        btn_ban = ttk.Button(btn_mod_frame, text="🚫 Ban", command=ban_usuario_selecionado, state=tk.DISABLED, width=8)
-        btn_ban.pack(side=tk.LEFT, padx=2)
+        btn_ban = tk.Button(btn_mod_frame, text="🚫 Ban", command=ban_usuario_selecionado, state=tk.DISABLED, 
+                            bg="#f8d7da", fg="#721c24", activebackground="#f5c6cb", relief="groove", font=("Arial", 9, "bold"), bd=1)
+        btn_ban.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        def _atualizar_painel():
+            try:
+                e_admin = (user_role == "admin")
+                e_dono = (dono_sala_atual == usuario_atual)
+                eh_mod = (e_admin or e_dono) and not sala_atual.startswith("@")
+                
+                if eh_mod:
+                    lbl_mod_title.pack(anchor="w", pady=(10, 2))
+                    lbl_mod_help.pack(anchor="w")
+                    btn_mod_frame.pack(fill=tk.X, pady=(2, 5))
+                else:
+                    lbl_mod_title.pack_forget()
+                    lbl_mod_help.pack_forget()
+                    btn_mod_frame.pack_forget()
+            except:
+                pass
+        
+        atualizar_painel_moderacao = _atualizar_painel
+        atualizar_painel_moderacao()
         
         def on_usuario_select(event):
             try:

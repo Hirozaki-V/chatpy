@@ -1442,19 +1442,25 @@ def gerenciar_cliente(cliente_socket, endereco):
 
             elif tipo == "help":
                 ajuda = (
-                    "\n--- COMANDOS DISPONÍVEIS ---\n"
-                    "/msg <usuario> <texto>      -> Envia uma mensagem privada.\n"
-                    "/friend add <usuario>       -> Adiciona um amigo.\n"
-                    "/friend remove <usuario>    -> Remove um amigo.\n"
-                    "/kick <usuario>             -> Expulsa um usuário (Apenas Dono).\n"
-                    "/ban <usuario>              -> Bane um usuário (Apenas Dono).\n"
-                    "/unban <usuario>            -> Desbane um usuário (Apenas Dono).\n"
-                    "/setpass <senha>            -> Altera a senha da sala (Apenas Dono).\n"
-                    "/chamar                      -> Chama atenção do destinatário na DM.\n"
-                    "/chamar <usuario>            -> Chama atenção de um usuário específico.\n"
-                    "/roll                       -> Sorteia um número de 1 a 100.\n"
-                    "/coinflip                   -> Joga uma moeda (Cara ou Coroa).\n"
-                    "----------------------------\n"
+                    "\n📋 **GUIA DE COMANDOS DO CHATPY**\n\n"
+                    "💬 **Mensagens e Interação:**\n"
+                    "• `/msg <usuario> <texto>` : Envia uma mensagem privada (DM).\n"
+                    "• `/chamar` : Chama a atenção na DM (faz a janela tremer).\n"
+                    "• `/chamar <usuario>` : Chama a atenção de um usuário na sala atual.\n"
+                    "• `/roll` : Rola um dado de 1 a 100.\n"
+                    "• `/coinflip` : Joga uma moeda (Cara ou Coroa).\n\n"
+                    "👥 **Amizades:**\n"
+                    "• `/friend add <usuario>` : Envia ou aceita convite de amizade.\n"
+                    "• `/friend remove <usuario>` : Remove um usuário da sua lista de amigos.\n\n"
+                    "🛡️ **Moderação (Apenas Dono da Sala ou Admin):**\n"
+                    "• `/kick <usuario>` : Expulsa temporariamente o usuário da sala.\n"
+                    "• `/ban <usuario>` : Bane permanentemente o usuário da sala.\n"
+                    "• `/unban <usuario>` : Remove o banimento do usuário da sala.\n"
+                    "• `/setpass <senha>` : Define uma senha para a sala (em branco para remover).\n\n"
+                    "💡 **Atalhos Úteis (Interface):**\n"
+                    "• **Clique Duplo** em uma aba para reabrir/focar nela.\n"
+                    "• **Clique com Botão Direito** nas abas ou lista de salas para opções rápidas (Fixar, Fechar, Excluir).\n"
+                    "• **Arrastar e Soltar (Drag & Drop)** arquivos na tela do chat para compartilhá-los.\n"
                 )
                 enviar_json(cliente_socket, {
                     "type": "chat_message",
