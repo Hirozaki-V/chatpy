@@ -1,0 +1,62 @@
+# Arquivos de versionamento e IDE
+.git
+.gitignore
+.github
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+ENV/
+
+# Arquivos temporários e rascunhos
+temp_req.txt
+temp_req2.txt
+temp_requests.txt
+*.bak
+*.tmp
+
+# Clientes (não entram na imagem do servidor — imagem fica menor)
+client-cli/
+client-desktop/
+legacy/
+
+# Testes e documentação (não necessários em runtime)
+tests/
+docs/
+scripts/
+
+# Docker e CI
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+.env.example
+
+# Dados locais
+*.db
+*.sqlite3
+uploads/
+data/

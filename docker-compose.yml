@@ -1,0 +1,95 @@
+# ---------------------------------------------------------------------------
+# Docker Compose — ChatPy V2
+# ---------------------------------------------------------------------------
+# IMPORTANTE:
+#   1. Crie um arquivo .env na mesma pasta com JWT_SECRET definido.
+#   2. Veja .env.example para referência.
+# ---------------------------------------------------------------------------
+
+version: "3.8"
+
+services:
+  # Servidor Principal ChatPy V2
+  chatpy-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatpy-server
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      # JWT_SECRET é OBRIGATÓRIO — carregado do arquivo .env
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET é obrigatório. Crie um arquivo .env com JWT_SECRET=<chave-longa>}
+      # Padrão usa SQLite no volume persistente; para Postgres, ative o profile 'database'
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/chatpy.db}
+      # CORS — origens permitidas, separadas por vírgula
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+      # Nível de log (DEBUG, INFO, WARNING, ERROR)
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Diretório de uploads (default: /app/uploads)
+      - UPLOAD_DIR=${UPLOAD_DIR:-/app/uploads}
+    volumes:
+      - chatpy-data:/app/data
+      - chatpy-uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # CORREÇÃO: depends_on de chatpy-cache removido.
+    # O Redis é um serviço OPCIONAL ativado via profile 'cache'. Tê-lo como
+    # dependência obrigatória fazia `docker compose up -d` (comando padrão
+    # documentado no README) falhar com erro "service 'chatpy-cache' is not
+    # defined in the active profiles". Agora o servidor sobe sozinho.
+
+  # PostgreSQL — Opcional para Alta Disponibilidade (ativado via profile 'database')
+  chatpy-db:
+    image: postgres:15-alpine
+    container_name: chatpy-db
+    restart: unless-stopped
+    profiles:
+      - database
+      - all
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-chatpy_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-chatpy_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-chatpy}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatpy_user} -d ${POSTGRES_DB:-chatpy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis — Opcional para Cache/Broker (ativado via profile 'cache')
+  chatpy-cache:
+    image: redis:7-alpine
+    container_name: chatpy-cache
+    restart: unless-stopped
+    profiles:
+      - cache
+      - all
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  chatpy-data:
+    driver: local
+  chatpy-uploads:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local

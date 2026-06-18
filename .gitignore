@@ -1,0 +1,58 @@
+# Python local
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.venv311/
+venv/
+env/
+ENV/
+.env
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Sistema
+rustup-init.exe
+vs_buildtools.exe
+*.zip
+
+# Bancos de dados locais
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# Certificados de segurança gerados localmente (NÃO devem ir pro repositório público por segurança!)
+*.key
+*.crt
+
+# Arquivos de configuração local
+config_local.json
+
+# Logs
+logs/
+*.log
+
+# Legacy generated files
+legacy/**/*.db
+legacy/**/*.log
+legacy/**/*.key
+legacy/**/*.crt
+legacy/**/logs/
+legacy/**/config_local.json
+
+# Client local config & themes
+client-desktop/models/user_config.json
+client-desktop/ui/theme_preference.txt
+
+# Uploads
+uploads/
