@@ -1,10 +1,22 @@
 import time
 import threading
+import os
 from typing import Dict, List, Optional
 
 import logging
 
 logger = logging.getLogger("chatpy.rate_limit")
+
+
+# ---------------------------------------------------------------------------
+# P0-9: Rate limit configurável via env vars.
+# Defaults mais permissivos que antes (5msg/3s era agressivo demais — usuário
+# legítimo digitando rápido era mutado). Agora: 10 msg em 5s, mute de 30s.
+# Operador pode ajustar via env sem mexer no código.
+# ---------------------------------------------------------------------------
+_DEFAULT_MAX_MESSAGES = int(os.getenv("RATE_LIMIT_MAX_MESSAGES", "10"))
+_DEFAULT_WINDOW_SECONDS = float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "5.0"))
+_DEFAULT_MUTE_DURATION = float(os.getenv("RATE_LIMIT_MUTE_DURATION", "30.0"))
 
 
 class RateLimiter:
@@ -14,13 +26,16 @@ class RateLimiter:
 
     Thread-safe (usado pelo dispatcher async + futuramente por múltiplos workers
     via Redis). Em memória por enquanto.
+
+    P0-9: limites configuráveis via env vars (RATE_LIMIT_MAX_MESSAGES,
+    RATE_LIMIT_WINDOW_SECONDS, RATE_LIMIT_MUTE_DURATION).
     """
 
     def __init__(
         self,
-        max_messages: int = 5,
-        window_seconds: float = 3.0,
-        mute_duration_seconds: float = 15.0,
+        max_messages: int = _DEFAULT_MAX_MESSAGES,
+        window_seconds: float = _DEFAULT_WINDOW_SECONDS,
+        mute_duration_seconds: float = _DEFAULT_MUTE_DURATION,
     ):
         self.max_messages = max_messages
         self.window_seconds = window_seconds

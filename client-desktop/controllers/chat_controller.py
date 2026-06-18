@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Signal
 
 from models.state import ClientState
 from services.connection_service import ConnectionService
+from utils.async_helper import run_in_background
 from shared.events import EventType
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ class ChatController(QObject):
     notification_requested = Signal(str, str)
     connection_status_changed = Signal(str)
     status_message = Signal(str, int)
+    # P1-3: emitido quando outro usuário está digitando.
+    # Args: (tab_name, username) — tab_name identifica a sala/DM onde mostrar.
+    typing_received = Signal(str, str)
 
     # Sinais internos para marshalling thread-safe de dados iniciais
     _initial_rooms_loaded = Signal(list, list)
@@ -78,6 +82,14 @@ class ChatController(QObject):
             token = self.service.api.login(username, password)
             self.state.username = username
             self.state.token = token
+            # #13: carrega histórico local em cache (sobrescreve #geral que
+            # vem vazio do ClientState.__init__). Será atualizado quando o
+            # load_initial_data trouxer o histórico fresco do servidor.
+            from models.state import load_history_cache
+            cached = load_history_cache(username)
+            if cached:
+                for tab, msgs in cached.items():
+                    self.state.messages[tab] = msgs
             self.service.connect(token, username)
         except Exception as e:
             logger.error(f"Erro no login REST: {e}")
@@ -131,6 +143,13 @@ class ChatController(QObject):
 
     def logout(self):
         """Faz logout completo: revoga sessão REST e desconecta WS."""
+        # #13: salva histórico local antes de limpar o estado
+        if self.state.username and self.state.messages:
+            try:
+                from models.state import save_history_cache
+                save_history_cache(self.state.username, self.state.messages)
+            except Exception as e:
+                logger.warning(f"Erro ao salvar cache de histórico: {e}")
         self.service.logout()
         self.state.clear()
 
@@ -276,7 +295,7 @@ class ChatController(QObject):
             except Exception as e:
                 logger.error(f"Erro ao carregar histórico de {room_name}: {e}")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        run_in_background(_worker)
 
     def _apply_online_data(self, online_list: list):
         self.state.online_users.clear()
@@ -352,13 +371,38 @@ class ChatController(QObject):
             logger.error(f"Erro ao carregar notificações: {e}")
 
     def mark_notifications_as_read(self, sender: str):
+        """
+        Marca como lidas todas as notificações relacionadas a um usuário
+        específico — DMs recebidas E confirmação de amizade aceita.
+
+        P0-4: Antes só marcava `type == "dm"`, deixando `friend_accepted`
+        perpetualmente "unread" até o usuário abrir o painel de notificações
+        (que marcava TODAS indiscriminadamente). Agora, ao abrir uma DM com
+        @username, também marcamos a confirmação de amizade dele como lida.
+        """
         updated = False
         for notif in self.state.notifications:
-            if notif.get("type") == "dm" and notif.get("sender") == sender and not notif.get("read"):
+            if notif.get("sender") != sender:
+                continue
+            if notif.get("read"):
+                continue
+            # Marca tanto DMs quanto confirmações de amizade daquele remetente
+            if notif.get("type") in ("dm", "friend_accepted"):
                 notif["read"] = True
                 updated = True
         if updated:
             self.state_updated.emit()
+
+    def mark_notification_read_by_id(self, notif_index: int):
+        """
+        Marca UMA notificação específica como lida pelo seu índice na lista.
+        Usado pelo painel de notificações quando o usuário clica num item —
+        em vez de marcar TODAS como lidas só por abrir o diálogo.
+        """
+        if 0 <= notif_index < len(self.state.notifications):
+            if not self.state.notifications[notif_index].get("read"):
+                self.state.notifications[notif_index]["read"] = True
+                self.state_updated.emit()
 
     def remove_friend(self, username: str):
         friend_uuid = self.state.user_uuid_map.get(username)
@@ -415,6 +459,84 @@ class ChatController(QObject):
     # Alias para compatibilidade com main_window.py que referencia send_friend_invite
     def send_friend_invite(self, username: str):
         self.send_friend_request(username)
+
+    def block_user(self, username: str):
+        """
+        Bloqueia um usuário: desfaz amizade/solicitação pendente e impede
+        novas DMs. O servidor retorna a amizade com status='blocked'.
+        """
+        target_uuid = self.state.user_uuid_map.get(username)
+        if not target_uuid:
+            # Tenta recarregar amigos e online para resolver o UUID
+            try:
+                for f in self.service.api.get_friends(self.state.token):
+                    self.state.user_uuid_map[f["username"]] = f["id"]
+                for u in self.service.api.get_online_users(self.state.token):
+                    self.state.user_uuid_map[u["username"]] = u["id"]
+                target_uuid = self.state.user_uuid_map.get(username)
+            except Exception as e:
+                self.status_message.emit(f"Erro ao localizar usuário: {e}", 3000)
+                return
+
+        if not target_uuid:
+            self.status_message.emit(f"Erro: UUID de {username} não encontrado.", 3000)
+            return
+
+        try:
+            self.service.api.block_user(self.state.token, str(target_uuid))
+            # Atualiza estado local: remove de amigos e fecha DM se aberta
+            if username in self.state.friends:
+                self.state.friends.remove(username)
+            tab_name = f"@{username}"
+            if tab_name in self.state.joined_rooms:
+                self.state.joined_rooms.remove(tab_name)
+                if tab_name in self.state.messages:
+                    del self.state.messages[tab_name]
+                if tab_name in self.state.read_only_tabs:
+                    self.state.read_only_tabs.remove(tab_name)
+                if self.state.active_tab == tab_name:
+                    self.state.active_tab = "#geral"
+            # Adiciona ao cache local de bloqueados
+            self.state.blocked_users.add(username)
+            self.status_message.emit(f"Usuário {username} bloqueado.", 3000)
+            self.state_updated.emit()
+        except Exception as e:
+            self.status_message.emit(f"Erro ao bloquear {username}: {e}", 3000)
+
+    def unblock_user(self, username: str):
+        """Desbloqueia um usuário previamente bloqueado."""
+        target_uuid = self.state.user_uuid_map.get(username)
+        if not target_uuid:
+            try:
+                for f in self.service.api.get_friends(self.state.token):
+                    self.state.user_uuid_map[f["username"]] = f["id"]
+                target_uuid = self.state.user_uuid_map.get(username)
+            except Exception as e:
+                self.status_message.emit(f"Erro ao localizar usuário: {e}", 3000)
+                return
+
+        if not target_uuid:
+            self.status_message.emit(f"Erro: UUID de {username} não encontrado.", 3000)
+            return
+
+        try:
+            self.service.api.unblock_user(self.state.token, str(target_uuid))
+            # Remove do cache local de bloqueados
+            self.state.blocked_users.discard(username)
+            self.status_message.emit(f"Usuário {username} desbloqueado.", 3000)
+            self.state_updated.emit()
+        except Exception as e:
+            self.status_message.emit(f"Erro ao desbloquear {username}: {e}", 3000)
+
+    def is_user_blocked(self, username: str) -> bool:
+        """
+        Verifica (via estado local) se um usuário está bloqueado.
+        Como o servidor não retorna a lista de bloqueados diretamente via
+        /api/friends (só retorna aceitos), mantemos um cache local alimentado
+        pelas ações block/unblock do próprio usuário. Para checagem autoritativa,
+        o servidor rejeita DMs para bloqueados no dispatcher.
+        """
+        return username in getattr(self.state, "blocked_users", set())
 
     # ──────────────────────────────────────────────────────────────────────
     # Salas
@@ -563,7 +685,7 @@ class ChatController(QObject):
                             self.service.api.leave_room(self.state.token, room_uuid)
                         except Exception:
                             pass
-                    threading.Thread(target=_leave, daemon=True).start()
+                    run_in_background(_leave)
 
             self.state.active_tab = "#geral"
             self.state_updated.emit()
@@ -589,6 +711,33 @@ class ChatController(QObject):
             self.state_updated.emit()
         except Exception as e:
             logger.error(f"Erro ao mudar status: {e}")
+
+    def send_typing(self):
+        """
+        P1-3: Envia evento 'user.typing' para a aba ativa atual.
+        A UI deve chamar isto com debounce (a cada ~2s) quando o usuário
+        digita — não a cada keystroke, para não poluir o servidor.
+        """
+        active = self.state.active_tab
+        if active.startswith("#"):
+            room_uuid = self.state.room_uuid_map.get(active)
+            if room_uuid:
+                try:
+                    self.service.run_coroutine_async(
+                        self.service.ws.send_typing_room(room_uuid)
+                    )
+                except Exception as e:
+                    logger.debug(f"Erro ao enviar typing room: {e}")
+        elif active.startswith("@"):
+            receiver_name = active.lstrip("@")
+            receiver_uuid = self.state.user_uuid_map.get(receiver_name)
+            if receiver_uuid:
+                try:
+                    self.service.run_coroutine_async(
+                        self.service.ws.send_typing_dm(receiver_uuid)
+                    )
+                except Exception as e:
+                    logger.debug(f"Erro ao enviar typing DM: {e}")
 
     # ──────────────────────────────────────────────────────────────────────
     # Envio de mensagens
@@ -644,7 +793,7 @@ class ChatController(QObject):
                             )
                     except Exception as e:
                         logger.error(f"Erro ao recarregar e enviar DM: {e}")
-                threading.Thread(target=_reload, daemon=True).start()
+                run_in_background(_reload)
                 return
 
             self.service.send_private_message(receiver_uuid, content, attachment_id)
@@ -688,7 +837,8 @@ class ChatController(QObject):
         if success:
             logger.info("WS Autenticado.")
             self.login_result.emit(True, "Login e conexão bem-sucedidos.")
-            threading.Thread(target=self.load_initial_data, daemon=True).start()
+            # #8: usa QThreadPool via helper
+            run_in_background(self.load_initial_data)
         else:
             logger.warning(f"Falha na autenticação do WS: {message}")
             self.login_result.emit(False, message)
@@ -726,6 +876,13 @@ class ChatController(QObject):
                         self.state.messages[room_name].append(msg_payload)
                         self.message_added.emit(room_name, msg_payload)
 
+                        # P1-2: incrementa badge de não-lidas se a aba NÃO
+                        # estiver ativa. Mensagens próprias não contam.
+                        if sender_name != self.state.username and self.state.active_tab != room_name:
+                            self.state.unread_counts[room_name] = \
+                                self.state.unread_counts.get(room_name, 0) + 1
+                            self.state_updated.emit()
+
                         if sender_name != self.state.username:
                             self.notification_requested.emit(f"Canal {room_name}", f"<{sender_name}> {content}")
                 else:
@@ -738,6 +895,12 @@ class ChatController(QObject):
 
                         self.state.messages[tab_name].append(msg_payload)
                         self.message_added.emit(tab_name, msg_payload)
+
+                        # P1-2: badge de não-lidas para DMs
+                        if self.state.active_tab != tab_name:
+                            self.state.unread_counts[tab_name] = \
+                                self.state.unread_counts.get(tab_name, 0) + 1
+                            self.state_updated.emit()
 
                         is_read = (self.state.active_tab == tab_name)
                         self.state.notifications.append({
@@ -835,6 +998,29 @@ class ChatController(QObject):
                 msg = payload.get("message", "")
                 self.status_message.emit(f"[Erro Servidor {code}] {msg}", 5000)
 
+            elif event == EventType.USER_TYPING_BROADCAST.value:
+                # P1-3: outro usuário está digitando. Mapeia para a aba
+                # correspondente (sala ou DM) e emite sinal para a UI.
+                username = payload.get("username") or "Desconhecido"
+                room_id = payload.get("room_id")
+                receiver_id = payload.get("receiver_id")
+
+                if room_id:
+                    # Sala: encontra o nome da aba pelo UUID
+                    tab_name = next(
+                        (name for name, uid in self.state.room_uuid_map.items()
+                         if uid == room_id),
+                        None,
+                    )
+                elif receiver_id:
+                    # DM: o nome da aba é @<username>
+                    tab_name = f"@{username}"
+                else:
+                    tab_name = None
+
+                if tab_name:
+                    self.typing_received.emit(tab_name, username)
+
         except Exception as e:
             logger.error(f"Erro ao processar evento WebSocket {event}: {e}")
 
@@ -850,7 +1036,7 @@ class ChatController(QObject):
             except Exception as e:
                 logger.error(f"Erro ao recarregar online users: {e}")
 
-        threading.Thread(target=_reload, daemon=True).start()
+        run_in_background(_reload)
 
     def _append_system_message(self, tab_name: str, text: str):
         if tab_name not in self.state.messages:

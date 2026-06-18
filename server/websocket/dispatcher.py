@@ -113,6 +113,14 @@ class WebSocketDispatcher:
             elif event == EventType.DM_START:
                 await self._handle_dm_start(authenticated_user_id, frame.payload)
 
+            elif event == EventType.USER_TYPING:
+                # P1-3: indicador de digitação — servidor retransmite
+                await self._handle_user_typing(authenticated_user_id, frame.payload)
+
+            elif event == EventType.MESSAGE_SEND_FEDERATED:
+                # P2-1.2d: DM federada — encaminha para servidor peer remoto
+                await self._handle_send_federated(authenticated_user_id, frame.payload)
+
             else:
                 await self._send_error(websocket, 400, f"Evento não implementado no servidor: {event}")
 
@@ -327,6 +335,34 @@ class WebSocketDispatcher:
         }
         await self.manager.broadcast_to_users(receive_frame, member_ids)
 
+        # #11: Processa bots — se a mensagem começa com !, bots respondem
+        try:
+            from server.bots import process_bots, BotContext, get_registered_bots
+            if get_registered_bots():
+                bot_context = BotContext(
+                    room_id=str(payload.room_id),
+                    sender_id=str(user_id),
+                    sender_name=username,
+                    is_dm=False,
+                )
+                bot_responses = await process_bots(content, bot_context)
+                for response in bot_responses:
+                    bot_frame = {
+                        "event": EventType.MESSAGE_RECEIVE.value,
+                        "payload": {
+                            "id": str(uuid.uuid4()),
+                            "room_id": str(payload.room_id),
+                            "sender_id": str(user_id),  # placeholder
+                            "sender_name": "🤖 Bot",
+                            "content": response,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "attachment": None,
+                        },
+                    }
+                    await self.manager.broadcast_to_users(bot_frame, member_ids)
+        except Exception as e:
+            logger.debug("Erro ao processar bots: %s", e)
+
     async def _handle_send_private(self, user_id: UUID, payload_data: dict):
         """Lida com mensagens diretas (DMs)."""
         try:
@@ -514,6 +550,22 @@ class WebSocketDispatcher:
             await self._send_error(websocket, 400, f"Payload inválido: {e}")
             return
 
+        # #7: Guests não podem criar salas PRIVADAS via WS também (paridade
+        # com o endpoint REST em /api/rooms).
+        if payload.is_private:
+            def check_guest():
+                with get_db() as db:
+                    user = db.query(User).filter(User.id == user_id).first()
+                    return getattr(user, 'is_guest', False) if user else False
+            is_guest = await asyncio.to_thread(check_guest)
+            if is_guest:
+                await self._send_error(
+                    websocket, 403,
+                    "Usuários convidados não podem criar salas privadas. "
+                    "Crie uma conta permanente para acessar este recurso."
+                )
+                return
+
         from server.rooms.service import criar_sala, RoomError
 
         def db_create():
@@ -620,3 +672,185 @@ class WebSocketDispatcher:
             },
         }
         await self.manager.send_personal_message(success_frame, user_id)
+
+    async def _handle_user_typing(self, user_id: UUID, payload_data: dict):
+        """
+        P1-3: Processa evento 'user.typing' do cliente.
+
+        Valida o payload e retransmite como 'user.typing_broadcast' para:
+          - Todos os membros da sala (se room_id fornecido)
+          - Apenas o destinatário da DM (se receiver_id fornecido)
+
+        Não persiste nada no banco — evento puramente efêmero.
+        Não conta para o rate limit (não é mensagem).
+        """
+        try:
+            payload = parse_payload(EventType.USER_TYPING, payload_data)
+        except Exception as e:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": f"Payload inválido: {e}"},
+                },
+                user_id,
+            )
+            return
+
+        username = self.manager.user_names.get(user_id)
+        if not username:
+            return
+
+        broadcast_frame = {
+            "event": EventType.USER_TYPING_BROADCAST.value,
+            "payload": {
+                "user_id": str(user_id),
+                "username": username,
+                "room_id": str(payload.room_id) if payload.room_id else None,
+                "receiver_id": str(payload.receiver_id) if payload.receiver_id else None,
+            },
+        }
+
+        if payload.room_id:
+            # Broadcast para membros da sala (exceto o próprio digitador)
+            def db_get_members():
+                with get_db() as db:
+                    members = db.query(RoomMember.user_id).filter(
+                        RoomMember.room_id == payload.room_id,
+                        RoomMember.is_banned == False,
+                        RoomMember.user_id != user_id,
+                    ).all()
+                    return [m[0] for m in members]
+
+            member_ids = await asyncio.to_thread(db_get_members)
+            await self.manager.broadcast_to_users(broadcast_frame, member_ids)
+
+        elif payload.receiver_id:
+            # DM: só envia para o destinatário
+            await self.manager.send_personal_message(broadcast_frame, payload.receiver_id)
+
+    async def _handle_send_federated(self, user_id: UUID, payload_data: dict):
+        """
+        P2-1.2d: Encaminha DM federada para servidor peer remoto.
+
+        Fluxo:
+          1. Valida payload (receiver_username deve ser @user@dominio)
+          2. Busca o sender local no banco (para obter username)
+          3. Busca peer pelo domínio do destinatário
+          4. Encaminha via HTTP POST /api/federation/dm
+          5. Notifica o remetente do sucesso/falha
+        """
+        try:
+            payload = parse_payload(EventType.MESSAGE_SEND_FEDERATED, payload_data)
+        except Exception as e:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": f"Payload inválido: {e}"},
+                },
+                user_id,
+            )
+            return
+
+        sender_username = self.manager.user_names.get(user_id)
+        if not sender_username:
+            return
+
+        content = (payload.content or "").strip()
+        if not content:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": "Conteúdo não pode ser vazio."},
+                },
+                user_id,
+            )
+            return
+        if len(content) > 5000:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": "Mensagem excede 5000 caracteres."},
+                },
+                user_id,
+            )
+            return
+
+        # P2-1.2d: parseia username federado
+        from server.federation import parse_federated_username, find_peer_for_domain, forward_dm_to_peer, get_server_domain
+        receiver_user, receiver_domain = parse_federated_username(payload.receiver_username)
+        if not receiver_user or not receiver_domain:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {
+                        "code": 400,
+                        "message": f"Username federado inválido: '{payload.receiver_username}'. Use @usuario@dominio",
+                    },
+                },
+                user_id,
+            )
+            return
+
+        # Busca peer pelo domínio
+        def db_find_peer():
+            with get_db() as db:
+                return find_peer_for_domain(db, receiver_domain)
+
+        peer = await asyncio.to_thread(db_find_peer)
+        if not peer:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {
+                        "code": 404,
+                        "message": f"Servidor '{receiver_domain}' não é um peer federado. Peça ao administrador para cadastrá-lo.",
+                    },
+                },
+                user_id,
+            )
+            return
+
+        # Encaminha via HTTP
+        this_domain = get_server_domain() or "localhost"
+        timestamp = datetime.now(timezone.utc)
+
+        def do_forward():
+            return forward_dm_to_peer(
+                peer=peer,
+                sender_username=sender_username,
+                sender_domain=this_domain,
+                receiver_username=receiver_user,
+                content=content,
+                timestamp=timestamp,
+            )
+
+        success = await asyncio.to_thread(do_forward)
+
+        if success:
+            # Confirma ao remetente
+            confirm_frame = {
+                "event": EventType.MESSAGE_RECEIVE.value,
+                "payload": {
+                    "id": str(uuid.uuid4()),
+                    "room_id": None,
+                    "sender_id": str(user_id),
+                    "sender_name": sender_username,
+                    "content": content,
+                    "timestamp": timestamp.isoformat(),
+                    "attachment": None,
+                    "federated": True,
+                    "federated_target": f"@{receiver_user}@{receiver_domain}",
+                },
+            }
+            await self.manager.send_personal_message(confirm_frame, user_id)
+        else:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {
+                        "code": 502,
+                        "message": f"Falha ao encaminhar DM para {receiver_domain}. O servidor peer pode estar offline.",
+                    },
+                },
+                user_id,
+            )

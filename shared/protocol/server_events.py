@@ -91,3 +91,22 @@ class FriendRemovedPayload(BaseModel):
 
     user_id: UUID = Field(..., description="UUID do usuário que foi removido da lista de amigos")
     username: str = Field(..., description="Nome de usuário do amigo removido")
+
+
+class UserTypingBroadcastPayload(BaseModel):
+    """
+    P1-3: Payload para o evento 'user.typing_broadcast' (server → client).
+
+    Servidor retransmite para os outros participantes quando um usuário
+    está digitando. O cliente mostra "X está digitando..." por alguns segundos.
+
+    Campos:
+        user_id (UUID): UUID de quem está digitando.
+        username (str): Nome de quem está digitando.
+        room_id (Optional[UUID]): Sala onde está digitando, ou None se for DM.
+        receiver_id (Optional[UUID]): Para DMs, UUID do destinatário.
+    """
+    user_id: UUID = Field(..., description="UUID de quem está digitando")
+    username: str = Field(..., description="Nome de quem está digitando")
+    room_id: Optional[UUID] = Field(None, description="Sala (ou None para DM)")
+    receiver_id: Optional[UUID] = Field(None, description="Destinatário da DM")

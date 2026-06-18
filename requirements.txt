@@ -11,3 +11,9 @@ httpx==0.28.1
 python-multipart==0.0.32
 # Carrega variáveis de arquivo .env em desenvolvimento
 python-dotenv==1.0.1
+# P2-7: métricas Prometheus (opcional — servidor funciona sem, mas /metrics
+# retorna apenas um comentário explicativo se não estiver instalado)
+prometheus_client>=0.17.0
+# #15: Schema migrations. Em dev, `Base.metadata.create_all()` ainda funciona.
+# Em produção, rodar `alembic upgrade head` no startup do container.
+alembic>=1.13.0

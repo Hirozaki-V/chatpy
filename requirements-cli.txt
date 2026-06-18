@@ -4,3 +4,7 @@ rich>=13.0.0
 httpx==0.28.1
 websockets==15.0.1
 pydantic==2.11.3
+# P2-5: input assíncrono no Unix (Linux/macOS) — permite ver mensagens
+# chegando durante a digitação. Opcional — sem isto, cai no fallback
+# input() síncrono (ainda funcional, mas sem feedback visual em tempo real).
+prompt_toolkit>=3.0.0

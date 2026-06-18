@@ -337,3 +337,82 @@ class ApiClient:
             return res.json()
         except httpx.RequestError as e:
             return {"status": "unreachable", "detail": str(e)}
+
+    def check_version(self) -> Dict[str, Any]:
+        """#9: Verica versão do servidor — clientes usam para notificar updates."""
+        url = f"{self.base_url}/api/version"
+        try:
+            res = httpx.get(url, timeout=self._timeout)
+            if res.status_code == 200:
+                return res.json()
+        except httpx.RequestError:
+            pass
+        return {}
+
+    # -----------------------------------------------------------------------
+    # #9: Administração de peers federados
+    # -----------------------------------------------------------------------
+    def list_federation_peers(self, token: str) -> List[Dict[str, Any]]:
+        """Lista peers federados cadastrados no servidor."""
+        url = f"{self.base_url}/api/admin/peers"
+        try:
+            res = httpx.get(url, headers=self._headers(token), timeout=self._timeout)
+            if res.status_code == 200:
+                return res.json()
+            return []
+        except httpx.RequestError:
+            return []
+
+    def register_federation_peer(
+        self, token: str, domain: str, base_url: str,
+        public_key: Optional[str] = None, trust_level: str = "verified",
+    ) -> Dict[str, Any]:
+        """Cadastra ou atualiza um peer federado."""
+        url = f"{self.base_url}/api/admin/peers"
+        payload = {
+            "domain": domain,
+            "base_url": base_url,
+            "public_key": public_key,
+            "trust_level": trust_level,
+        }
+        try:
+            res = httpx.post(url, json=payload, headers=self._headers(token), timeout=self._timeout)
+            if res.status_code in (200, 201):
+                return res.json()
+            raise ValueError(self._safe_json(res, "Erro ao cadastrar peer."))
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+
+    def discover_federation_peer(self, token: str, domain: str) -> Dict[str, Any]:
+        """Descobre um peer via .well-known/chatpy.json e cadastra automaticamente."""
+        url = f"{self.base_url}/api/admin/peers/discover"
+        try:
+            res = httpx.post(
+                url, json={"domain": domain},
+                headers=self._headers(token), timeout=30.0,  # timeout maior para descoberta
+            )
+            if res.status_code == 200:
+                return res.json()
+            raise ValueError(self._safe_json(res, "Erro ao descobrir peer."))
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+
+    def toggle_federation_peer(self, token: str, peer_id: str) -> Dict[str, Any]:
+        """Ativa ou desativa um peer federado."""
+        url = f"{self.base_url}/api/admin/peers/{peer_id}/toggle"
+        try:
+            res = httpx.put(url, headers=self._headers(token), timeout=self._timeout)
+            if res.status_code == 200:
+                return res.json()
+            raise ValueError(self._safe_json(res, "Erro ao alternar peer."))
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+
+    def delete_federation_peer(self, token: str, peer_id: str) -> bool:
+        """Remove permanentemente um peer federado."""
+        url = f"{self.base_url}/api/admin/peers/{peer_id}"
+        try:
+            res = httpx.delete(url, headers=self._headers(token), timeout=self._timeout)
+            return res.status_code == 204
+        except httpx.RequestError:
+            return False

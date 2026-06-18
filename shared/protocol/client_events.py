@@ -71,7 +71,39 @@ class RoomCreatePayload(BaseModel):
 class DmStartPayload(BaseModel):
     """
     Payload para o evento 'dm.start'.
-    
+
     Enviado pelo cliente para iniciar um chat privado (DM) diretamente com um usuário.
     """
     receiver_id: UUID = Field(..., description="UUID do usuário destinatário")
+
+
+class UserTypingPayload(BaseModel):
+    """
+    P1-3: Payload para o evento 'user.typing' (client → server).
+
+    Enviado pelo cliente quando o usuário está digitando numa sala ou DM.
+    O servidor retransmite como 'user.typing_broadcast' para os outros
+    participantes, que mostram "X está digitando..." por alguns segundos.
+
+    Campos:
+        room_id (Optional[UUID]): UUID da sala, ou None se for DM.
+        receiver_id (Optional[UUID]): UUID do destinatário da DM (se for DM).
+    """
+    room_id: Optional[UUID] = Field(None, description="UUID da sala (ou None para DM)")
+    receiver_id: Optional[UUID] = Field(None, description="UUID do destinatário da DM")
+
+
+class MessageSendFederatedPayload(BaseModel):
+    """
+    P2-1.2d: Payload para o evento 'message.send_federated' (client → server).
+
+    Enviado pelo cliente para mandar uma DM para um usuário em outro
+    servidor (ex: @user@outro-servidor.com). O servidor local identifica
+    o peer pelo domínio e encaminha via HTTP.
+
+    Campos:
+        receiver_username (str): Username federado completo (ex: @bob@outro.com)
+        content (str): Conteúdo da mensagem
+    """
+    receiver_username: str = Field(..., description="Username federado: @user@dominio")
+    content: str = Field(..., description="Conteúdo da mensagem")

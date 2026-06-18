@@ -23,6 +23,55 @@ def save_user_config(pinned_tabs: list, favorite_tabs: list):
     except Exception:
         pass
 
+
+# ---------------------------------------------------------------------------
+# #13: Persistência de histórico local entre sessões
+# ---------------------------------------------------------------------------
+def get_history_cache_path(username: str) -> str:
+    """Retorna o caminho do arquivo de cache de histórico para um usuário."""
+    cache_dir = os.path.dirname(os.path.abspath(__file__))
+    # Sanitiza username para evitar path traversal — só alfanuméricos e _ -
+    # (não permitimos . para evitar ".." e extensões inesperadas)
+    safe_username = "".join(c for c in username if c.isalnum() or c in "_-") or "default"
+    # Força basename para garantir que não há separadores residuais
+    safe_username = os.path.basename(safe_username)
+    return os.path.join(cache_dir, f"history_cache_{safe_username}.json")
+
+def load_history_cache(username: str) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    #13: Carrega histórico de mensagens em cache local.
+    Retorna dict {tab_name: [messages]}. Falha silenciosamente se não existir.
+    """
+    if not username:
+        return {}
+    cache_path = get_history_cache_path(username)
+    if not os.path.exists(cache_path):
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_history_cache(username: str, messages: Dict[str, List[Dict[str, Any]]], max_per_tab: int = 50):
+    """
+    #13: Salva histórico de mensagens em cache local.
+    Limita a max_per_tab mensagens por aba para não crescer indefinidamente.
+    """
+    if not username:
+        return
+    cache_path = get_history_cache_path(username)
+    try:
+        # Trunca cada aba para as últimas max_per_tab mensagens
+        truncated = {}
+        for tab, msgs in messages.items():
+            if isinstance(msgs, list):
+                truncated[tab] = msgs[-max_per_tab:]
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(truncated, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 class ClientState:
     """
     Representa o estado local da aplicação cliente desktop.
@@ -54,9 +103,21 @@ class ClientState:
         # Cache de anexos: uuid -> (bytes, mime_type)
         self.attachment_cache: Dict[str, tuple] = {}
 
+        # P1-2: contador de mensagens não-lidas por aba (tab_name -> count).
+        # Incrementado quando uma mensagem chega numa aba que NÃO está ativa.
+        # Zerado quando a aba se torna ativa. A UI renderiza o badge no título.
+        self.unread_counts: Dict[str, int] = {}
+
         # Abas em modo somente leitura (DMs cuja amizade foi desfeita).
         # O usuário pode ver o histórico e baixar anexos antigos, mas não enviar novas mensagens.
         self.read_only_tabs: List[str] = []
+
+        # Cache local de usuários bloqueados pelo próprio usuário.
+        # Alimentado pelas ações block_user/unblock_user no controller.
+        # O servidor continua sendo a fonte autoritativa — o cache serve
+        # apenas para a UI decidir se mostra "Bloquear" ou "Desbloquear"
+        # no menu de contexto.
+        self.blocked_users: set = set()
 
         # Abas e Notificações persistidas (Fase 2.10)
         config = load_user_config()
@@ -138,6 +199,11 @@ class ClientState:
         # read_only_tabs NÃO é limpo no logout (mas como joined_rooms é limpo,
         # as abas read-only somem naturalmente ao reiniciar).
         self.read_only_tabs = []
+        # P1-2: limpa contadores de não-lidas no logout
+        self.unread_counts = {}
+        # Cache de bloqueados é limpo no logout — recarrega dinamicamente
+        # conforme o usuário bloqueia/desbloqueia na nova sessão.
+        self.blocked_users = set()
         # pinned_tabs e favorite_tabs são recarregados de user_config.json
         # (que NÃO é apagado no logout) — recarrega aqui para garantir estado consistente.
         config = load_user_config()

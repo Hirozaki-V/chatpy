@@ -51,6 +51,15 @@ def atualizar_status(db: Session, user_id: uuid.UUID, status: str) -> User:
 
     user.status = status
     db.flush()
+
+    # #5: Notifica peers federados sobre mudança de presença
+    try:
+        from server.federation import forward_presence_to_peers, is_federation_enabled
+        if is_federation_enabled():
+            forward_presence_to_peers(db, user.username, status)
+    except Exception:
+        pass  # Federação é best-effort — não falha o update de status
+
     return user
 
 def listar_usuarios_online(db: Session) -> List[User]:

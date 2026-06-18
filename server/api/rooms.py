@@ -62,6 +62,16 @@ def create_new_room(
     current_user: User = Depends(get_current_user),
 ):
     """Cria uma nova sala de chat e associa o usuário criador como administrador."""
+    # #7: Guests não podem criar salas PRIVADAS (podem criar públicas).
+    # Salas privadas exigem senha e são mais propensas a abuso por contas
+    # efêmeras (compartilhamento de conteúdo sem rastreabilidade).
+    if getattr(current_user, 'is_guest', False) and req.is_private:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuários convidados não podem criar salas privadas. "
+                   "Crie uma conta permanente para acessar este recurso.",
+        )
+
     try:
         room = criar_sala(db, req.name, req.is_private, req.password, current_user.id, req.description)
         db.commit()
@@ -233,6 +243,16 @@ def update_member_role(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Papel inválido. Deve ser 'admin' ou 'member'.",
         )
+
+    # #7: Guests não podem ser promovidos a admin (contas efêmeras não devem
+    # ter poder de moderação — podem abusar e expirar a qualquer momento).
+    if req.role == "admin":
+        target_user = db.query(User).filter(User.id == user_id).first()
+        if target_user and getattr(target_user, 'is_guest', False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuários convidados não podem ser promovidos a administrador.",
+            )
 
     try:
         if req.role == "admin":

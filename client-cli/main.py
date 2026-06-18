@@ -189,6 +189,29 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
             msg = _sanitize_text(payload.get("message") or "")
             state.messages[state.active_tab].append(f"[Servidor Erro {code}] {msg}")
 
+        elif event == EventType.USER_TYPING_BROADCAST.value:
+            # P1-3: indicador de digitação na CLI — append direto na aba ativa
+            # (não persiste, mas dá feedback visual em tempo real).
+            username = _sanitize_text(payload.get("username") or "Desconhecido")
+            room_id = payload.get("room_id")
+            receiver_id = payload.get("receiver_id")
+
+            target_tab = state.active_tab
+            if room_id:
+                target_tab = next(
+                    (name for name, uid in state.room_uuid_map.items() if uid == room_id),
+                    state.active_tab,
+                )
+            elif receiver_id:
+                target_tab = f"@{username}"
+
+            if target_tab == state.active_tab and username != state.username:
+                # Apenas mostra se a aba ativa for o destino — append efêmero
+                # (próxima renderização do live_chat_loop vai sobrescrever).
+                state.messages[state.active_tab].append(
+                    f"  ... {username} está digitando ..."
+                )
+
     except Exception as e:
         state.messages[state.active_tab].append(f"[Erro Interno WS] {e}")
 
@@ -260,7 +283,11 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /promote username        - Promover membro a admin (requer owner)\n"
             "  /demote username         - Rebaixar admin a membro (requer owner)\n"
             "  /status [online|away]    - Alterar status de presença\n"
+            "  /theme [dark|light]      - Alternar tema da interface CLI\n"
+            "  /fmsg @user@dominio msg  - Enviar DM federada para outro servidor\n"
             "  /switch tab_name         - Mudar de aba ativa (ex: #geral ou @alice)\n"
+            "  /download <id> [caminho] - Baixar anexo do servidor\n"
+            "  /upload <caminho>        - Enviar arquivo como anexo\n"
             "  /quit ou /exit           - Fechar o cliente de chat\n"
             "  (Dica: Pressione a tecla TAB para alternar rapidamente entre abas)"
         )
@@ -519,6 +546,97 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
 
+    elif cmd == "/theme":
+        # #16: Alterna entre temas dark/light da CLI + import/export customizados.
+        if len(parts) < 2:
+            from views.interface import get_saved_theme
+            current = get_saved_theme()
+            state.messages[state.active_tab].append(
+                f"[Sistema] Tema atual: {current}.\n"
+                "  /theme dark|light       - Alternar tema embutido\n"
+                "  /theme import <caminho> - Importar tema .chatpy-theme\n"
+                "  /theme export <caminho> - Exportar tema atual"
+            )
+            return
+
+        subcmd = parts[1].lower()
+
+        if subcmd in ("dark", "light"):
+            from views.interface import save_theme
+            save_theme(subcmd)
+            state.messages[state.active_tab].append(
+                f"[Sistema] Tema alterado para: {subcmd}."
+            )
+
+        elif subcmd == "import":
+            if len(parts) < 3:
+                state.messages[state.active_tab].append("[Sistema] Uso: /theme import <caminho>")
+                return
+            filepath = parts[2]
+            from shared.theme_manager import load_theme_from_file
+            theme_data = load_theme_from_file(filepath)
+            if not theme_data:
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Falha ao importar tema de {filepath}. Arquivo inválido."
+                )
+                return
+            # Salva como tema customizado
+            from views.interface import THEMES
+            THEMES["custom"] = theme_data["colors"]
+            from views.interface import save_theme
+            save_theme("custom")
+            state.messages[state.active_tab].append(
+                f"[Sistema] Tema '{theme_data.get('name', 'custom')}' importado!"
+            )
+
+        elif subcmd == "export":
+            if len(parts) < 3:
+                state.messages[state.active_tab].append("[Sistema] Uso: /theme export <caminho>")
+                return
+            filepath = parts[2]
+            from views.interface import get_saved_theme, THEMES
+            current = get_saved_theme()
+            colors = THEMES.get(current, THEMES["dark"])
+            from shared.theme_manager import export_theme, save_theme_to_file
+            theme_data = export_theme(current, colors, state.username)
+            if save_theme_to_file(theme_data, filepath):
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Tema '{current}' exportado para {filepath}"
+                )
+            else:
+                state.messages[state.active_tab].append("[Sistema] Falha ao exportar tema.")
+
+        else:
+            state.messages[state.active_tab].append(
+                "[Sistema] Subcomando inválido. Use: /theme dark|light|import|export"
+            )
+
+    elif cmd == "/fmsg":
+        # P2-1.2d: Envia DM federada para usuário em outro servidor.
+        # Uso: /fmsg @user@dominio mensagem
+        if len(parts) < 3:
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /fmsg @user@dominio mensagem"
+            )
+            return
+        target = parts[1]
+        if not target.startswith("@") or "@" not in target[1:]:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Username federado inválido: '{target}'. Use @user@dominio"
+            )
+            return
+        content = parts[2]
+        try:
+            await ws.send_federated_message(target, content)
+            t = datetime.now().strftime("%H:%M")
+            state.messages[state.active_tab].append(
+                f"[{t}] [Federado → {target}] <{state.username}> {content}"
+            )
+        except Exception as e:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Falha ao enviar DM federada: {e}"
+            )
+
     elif cmd == "/switch":
         if len(parts) < 2:
             state.messages[state.active_tab].append("[Sistema] Uso: /switch tab_name")
@@ -671,6 +789,84 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
 
+    elif cmd == "/download":
+        # #12: Baixa um anexo do servidor e salva no filesystem local.
+        # Uso: /download <attachment_id> [caminho_destino]
+        if len(parts) < 2:
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /download <attachment_id> [caminho_destino]"
+            )
+            return
+        att_id = parts[1]
+        # Caminho de destino: se não fornecido, usa diretório atual + ID
+        save_path = parts[2] if len(parts) > 2 else f"anexo_{att_id[:8]}"
+
+        state.messages[state.active_tab].append(
+            f"[Sistema] Baixando anexo {att_id}... (salvando em {save_path})"
+        )
+
+        def _do_download():
+            try:
+                file_bytes = api.download_attachment(state.token, att_id)
+                with open(save_path, "wb") as f:
+                    f.write(file_bytes)
+                size_kb = len(file_bytes) / 1024
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Anexo salvo em {save_path} ({size_kb:.1f} KB)"
+                )
+            except Exception as e:
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Falha ao baixar anexo: {e}"
+                )
+
+        # Roda em thread separada para não bloquear a UI
+        import threading
+        threading.Thread(target=_do_download, daemon=True).start()
+
+    elif cmd == "/upload":
+        # #12: Upload de anexo para o servidor. Retorna o ID que pode ser
+        # usado em mensagens via WS (futuro — por enquanto só faz upload).
+        # Uso: /upload <caminho_arquivo>
+        if len(parts) < 2:
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /upload <caminho_arquivo>"
+            )
+            return
+        file_path = parts[1]
+        if not os.path.exists(file_path):
+            state.messages[state.active_tab].append(
+                f"[Sistema] Arquivo não encontrado: {file_path}"
+            )
+            return
+
+        import mimetypes
+        filename = os.path.basename(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or "application/octet-stream"
+
+        state.messages[state.active_tab].append(
+            f"[Sistema] Enviando {filename}..."
+        )
+
+        def _do_upload():
+            try:
+                with open(file_path, "rb") as f:
+                    file_bytes = f.read()
+                result = api.upload_attachment(state.token, filename, file_bytes, mime_type)
+                att_id = result.get("id", "?")
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Upload concluído! ID: {att_id}\n"
+                    f"  Tamanho: {len(file_bytes)} bytes\n"
+                    f"  Use /download {att_id} em outra sessão para baixar."
+                )
+            except Exception as e:
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Falha no upload: {e}"
+                )
+
+        import threading
+        threading.Thread(target=_do_upload, daemon=True).start()
+
     elif cmd in ("/quit", "/exit"):
         state.running = False
 
@@ -738,11 +934,56 @@ async def input_poller_windows(input_queue: asyncio.Queue):
 
 
 async def input_poller_fallback(input_queue: asyncio.Queue):
-    """Fallback simples line-by-line para plataformas não-Windows (macOS/Linux)."""
+    """
+    Fallback para Unix (macOS/Linux).
+
+    P2-5: Antes usava `input()` síncrono numa thread — bloqueava o
+    feedback visual enquanto o usuário digitava (não conseguia ver
+    mensagens chegando durante a digitação). Agora tenta usar
+    `prompt_toolkit` (se disponível) para input assíncrono nativo,
+    que permite a UI atualizar durante a digitação.
+
+    Se prompt_toolkit não estiver instalado, cai no fallback antigo
+    (input síncrono em thread).
+    """
+    # Tenta importar prompt_toolkit — se não tiver, usa fallback antigo
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.patched import Prompt
+        PROMPT_TOOLKIT_AVAILABLE = True
+    except ImportError:
+        PROMPT_TOOLKIT_AVAILABLE = False
+
+    if not PROMPT_TOOLKIT_AVAILABLE:
+        # Fallback antigo: input síncrono em thread (sem feedback visual
+        # durante a digitação, mas funciona em qualquer terminal).
+        while state.running:
+            line = await asyncio.to_thread(input, "")
+            if line and line.strip():
+                await input_queue.put(line)
+        return
+
+    # prompt_toolkit disponível — input assíncrono nativo.
+    # Usa PromptSession com patch asyncio para integrar com o event loop.
+    session = PromptSession()
+
     while state.running:
-        line = await asyncio.to_thread(input, "")
-        if line and line.strip():
-            await input_queue.put(line)
+        try:
+            # prompt_async retorna o texto digitado quando o usuário pressiona Enter.
+            # Não mostra prompt visível (a UI Rich já mostra o cursor na footer).
+            # text_mode=True para não conflitar com o Live refresh do Rich.
+            line = await session.prompt_async("", patch_stdout=True)
+            if line and line.strip():
+                await input_queue.put(line)
+            state.current_input = ""
+        except (EOFError, KeyboardInterrupt):
+            # Ctrl+D ou Ctrl+C encerram o cliente
+            state.running = False
+            return
+        except Exception as e:
+            # Erro inesperado — loga e continua (não derruba o poller)
+            state.messages[state.active_tab].append(f"[Sistema] Erro no input: {e}")
+            await asyncio.sleep(0.5)
 
 
 async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
@@ -761,6 +1002,17 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
 
     await ws.authenticate(state.token)
 
+    # #11: Auto-away por inatividade na CLI.
+    # last_activity_ts é atualizado a cada input do usuário.
+    # A cada 30s, checa se passou mais de IDLE_TIMEOUT_SECONDS (default 300s)
+    # desde a última atividade. Se sim, muda status para "away".
+    import os as _os
+    import time as _time
+    idle_timeout = int(_os.getenv("IDLE_TIMEOUT_SECONDS", "300"))
+    last_activity_ts = _time.time()
+    last_idle_check = _time.time()
+    auto_away_active = False
+
     with Live(auto_refresh=False) as live:
         while state.running:
             layout = create_chat_layout(
@@ -776,12 +1028,40 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
 
             try:
                 line = input_queue.get_nowait()
+                # #11: registra atividade
+                last_activity_ts = _time.time()
+                # Se estava em auto-away, volta para online
+                if auto_away_active:
+                    auto_away_active = False
+                    try:
+                        api.update_status(state.token, "online")
+                        state.status = "online"
+                    except Exception:
+                        pass
+
                 if line.startswith("/"):
                     await process_user_command(line, api, ws)
                 else:
                     await process_chat_message(line, api, ws)
             except asyncio.QueueEmpty:
                 pass
+
+            # #11: checa idle a cada 30s
+            now = _time.time()
+            if now - last_idle_check > 30:
+                last_idle_check = now
+                if (not auto_away_active
+                        and state.status == "online"
+                        and (now - last_activity_ts) >= idle_timeout):
+                    auto_away_active = True
+                    try:
+                        api.update_status(state.token, "away")
+                        state.status = "away"
+                        state.messages[state.active_tab].append(
+                            "[Sistema] Você ficou ocioso — status alterado para 'away' automaticamente."
+                        )
+                    except Exception:
+                        pass
 
             await asyncio.sleep(0.05)
 
@@ -805,8 +1085,49 @@ def main(
     console.print("[bold green]      ChatPy V2 - CLIENT CLI     [/bold green]")
     console.print("[bold green]========================================[/bold green]\n")
 
+    # #7: Descoberta de servidores na LAN via mDNS
+    if host == "127.0.0.1":
+        try:
+            from server.lan_discovery import discover_servers, is_lan_discovery_enabled
+            if is_lan_discovery_enabled():
+                console.print("[dim]Procurando servidores ChatPy na rede local...[/dim]")
+                servers = discover_servers(timeout=2.0)
+                if servers:
+                    console.print(f"[cyan]📡 {len(servers)} servidor(es) encontrado(s) na LAN:[/cyan]")
+                    for i, s in enumerate(servers):
+                        console.print(
+                            f"  [{i+1}] {s['name']} — {s['ip']}:{s['port']} (v{s['version']})"
+                        )
+                    console.print(
+                        f"[dim]Conectando em {host}:{port} (use --host e --port para mudar)[/dim]\n"
+                    )
+                else:
+                    console.print("[dim]Nenhum servidor ChatPy encontrado na LAN.[/dim]\n")
+        except Exception:
+            pass
+
     # Healthcheck antes de tentar login
     health = api.health()
+
+    # #9: Check de versão — notifica se há update disponível
+    version_info = api.check_version()
+    if version_info:
+        latest = version_info.get("latest_client_version", "")
+        if latest and latest != "2.0.1":  # CLIENT_VERSION
+            console.print(
+                f"[yellow]⚠️  Nova versão disponível: {latest} "
+                f"(você está na 2.0.1)[/yellow]"
+            )
+            if version_info.get("download_url"):
+                console.print(f"[dim]Baixe em: {version_info['download_url']}[/dim]")
+            console.print()
+        min_ver = version_info.get("min_client_version", "")
+        if min_ver and min_ver > "2.0.1":
+            console.print(
+                f"[bold red]⚠️  Seu cliente (2.0.1) é incompatível com este servidor "
+                f"(mínimo: {min_ver}). Atualize![/bold red]"
+            )
+
     if health.get("status") != "healthy":
         console.print(f"[bold red]Servidor indisponível em {base_url}.[/bold red]")
         console.print(f"[yellow]Detalhe: {health}[/yellow]")

@@ -30,6 +30,8 @@ class WebSocketClient:
         self._connected: bool = False
         self._auth_token: Optional[str] = None  # Para re-autenticação em reconexões
         self._loop: Optional[asyncio.AbstractEventLoop] = None  # capturado no start_listener
+        # #12: fila de mensagens enviadas enquanto offline — re-enviadas ao reconectar
+        self._offline_queue: list = []
 
     @property
     def is_connected(self) -> bool:
@@ -77,9 +79,16 @@ class WebSocketClient:
         self._connected = False
 
     async def send_frame(self, event: EventType, payload: dict):
-        """Envia um frame estruturado para o WebSocket."""
-        if not self.websocket:
-            raise ConnectionError("WebSocket não conectado.")
+        """
+        Envia um frame estruturado para o WebSocket.
+
+        #12: Se offline, enfileira a mensagem para re-envio quando reconectar.
+        """
+        if not self.websocket or not self._connected:
+            # #12: enfileira para envio posterior
+            self._offline_queue.append((event, payload))
+            logger.info("Mensagem enfileirada (offline): %s (fila: %d)", event.value, len(self._offline_queue))
+            return
         frame = {"event": event.value, "payload": payload}
         await self.websocket.send(json.dumps(frame))
 
@@ -111,6 +120,30 @@ class WebSocketClient:
 
     async def start_dm(self, receiver_id: str):
         await self.send_frame(EventType.DM_START, {"receiver_id": receiver_id})
+
+    async def send_typing_room(self, room_id: str):
+        """
+        P1-3: Notifica que o usuário está digitando numa sala.
+        O servidor retransmite para os outros membros.
+        """
+        await self.send_frame(EventType.USER_TYPING, {"room_id": room_id})
+
+    async def send_typing_dm(self, receiver_id: str):
+        """
+        P1-3: Notifica que o usuário está digitando numa DM.
+        O servidor retransmite apenas para o destinatário.
+        """
+        await self.send_frame(EventType.USER_TYPING, {"receiver_id": receiver_id})
+
+    async def send_federated_message(self, receiver_username: str, content: str):
+        """
+        P2-1.2d: Envia DM federada para usuário em outro servidor.
+        receiver_username deve ser @user@dominio.
+        """
+        await self.send_frame(
+            EventType.MESSAGE_SEND_FEDERATED,
+            {"receiver_username": receiver_username, "content": content},
+        )
 
     def start_listener(
         self,
@@ -175,6 +208,8 @@ class WebSocketClient:
                         # Restabelece a sessão automaticamente (re-auth transparente)
                         if self._auth_token:
                             await self.authenticate(self._auth_token)
+                            # #12: re-envia mensagens que foram enfileiradas enquanto offline
+                            await self._flush_offline_queue()
                         break
                     except (OSError, websockets.exceptions.WebSocketException) as exc2:
                         logger.warning("WebSocket: falha na tentativa %d (%s).", attempt, exc2)
@@ -193,3 +228,23 @@ class WebSocketClient:
                 await loop.run_in_executor(None, callback, *args)
         except Exception:
             logger.exception("WebSocket: erro ao invocar callback %s.", callback)
+
+    async def _flush_offline_queue(self):
+        """
+        #12: Re-envia todas as mensagens que foram enfileiradas enquanto
+        o cliente estava offline. Chamado após reconexão + re-auth.
+        """
+        if not self._offline_queue:
+            return
+        queue = self._offline_queue.copy()
+        self._offline_queue.clear()
+        logger.info("Re-enviando %d mensagem(ns) da fila offline...", len(queue))
+        for event, payload in queue:
+            try:
+                frame = {"event": event.value, "payload": payload}
+                await self.websocket.send(json.dumps(frame))
+            except Exception as e:
+                logger.warning("Erro ao re-enviar mensagem da fila: %s", e)
+                # Re-enfileira se falhar
+                self._offline_queue.append((event, payload))
+        logger.info("Fila offline esvaziada.")

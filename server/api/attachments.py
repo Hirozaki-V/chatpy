@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 from server.database.connection import get_db_api, get_db
 from server.database.models import User, Attachment
 from server.api.dependencies import get_current_user
+from shared.allowed_attachments import (
+    ALLOWED_MIME_TYPES,
+    ALLOWED_EXTENSIONS,
+    DEFAULT_MAX_FILE_SIZE,
+    get_allowed_extensions_display,
+)
 from pydantic import BaseModel
 
 logger = logging.getLogger("chatpy.attachments")
@@ -16,45 +22,12 @@ logger = logging.getLogger("chatpy.attachments")
 router = APIRouter(prefix="/api/attachments", tags=["attachments"])
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+# P0-9 (parcial): MAX_FILE_SIZE configurável via env (default 10 MB)
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(DEFAULT_MAX_FILE_SIZE)))
 # Tamanho máximo em memória antes de forçar streaming para disco
 STREAM_THRESHOLD = 5 * 1024 * 1024  # 5 MB
 
-# ---------------------------------------------------------------------------
-# Allowlist de MIME types (substitui a denylist de extensões — muito mais segura)
-# ---------------------------------------------------------------------------
-ALLOWED_MIME_TYPES = {
-    # Imagens
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/x-icon",
-    # Documentos
-    "application/pdf", "text/plain", "text/markdown", "text/csv",
-    "application/json", "application/xml",
-    # Áudio
-    "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm",
-    # Vídeo
-    "video/mp4", "video/webm", "video/ogg",
-    # Arquivos compactados
-    "application/zip", "application/gzip", "application/x-tar",
-    # Office (apenas leitura, não executáveis)
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/vnd.oasis.opendocument.text",
-    "application/vnd.oasis.opendocument.spreadsheet",
-}
-
-# Extensões permitidas para validação cruzada caso o cliente minta o MIME type
-ALLOWED_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico",
-    ".pdf", ".txt", ".md", ".csv",
-    ".json", ".xml",
-    ".mp3", ".ogg", ".wav",
-    ".mp4", ".webm",
-    ".zip", ".gz", ".tar", ".tgz",
-    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".odt", ".ods",
-}
+# Allowlist reutilizada de shared/allowed_attachments.py (DRY)
 
 # Padrões perigosos em nomes de arquivo (path traversal, caracteres de controle, etc.)
 _UNSAFE_FILENAME_RE = re.compile(r"[\x00-\x1f<>:\"/\\|?*]|(\.\.)")
@@ -96,6 +69,12 @@ def upload_attachment(
     Usa ALLOWLIST de MIME types e extensões (muito mais seguro que denylist).
     Valida tamanho e sanitiza o nome do arquivo.
     """
+    # #7: Guests têm limite de anexo menor (1 MB) — contas efêmeras não devem
+    # conseguir consumir muito espaço em disco do servidor.
+    is_guest = getattr(current_user, 'is_guest', False)
+    GUEST_MAX_FILE_SIZE = int(os.getenv("GUEST_MAX_FILE_SIZE", str(1024 * 1024)))  # 1 MB
+    effective_max_size = GUEST_MAX_FILE_SIZE if is_guest else MAX_FILE_SIZE
+
     # 1. Sanitiza e valida nome
     raw_filename = file.filename or "arquivo.bin"
     filename = _sanitize_filename(raw_filename)
@@ -105,7 +84,7 @@ def upload_attachment(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Extensão '{ext}' não permitida. Use um dos formatos suportados: "
-                   "imagens, PDF, texto, áudio, vídeo, zip/doc/xls.",
+                   f"{get_allowed_extensions_display()}.",
         )
 
     # 2. Valida MIME type declarado (allowlist)
@@ -130,10 +109,13 @@ def upload_attachment(
             detail="Arquivo vazio ou inválido.",
         )
 
-    if size > MAX_FILE_SIZE:
+    # #7: usa effective_max_size (1 MB para guests, MAX_FILE_SIZE para demais)
+    if size > effective_max_size:
+        limit_mb = effective_max_size // (1024 * 1024)
+        user_type = "convidado" if is_guest else "comum"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Arquivo excede o limite máximo de 10 MB.",
+            detail=f"Arquivo excede o limite máximo de {limit_mb} MB para usuários {user_type}s.",
         )
 
     # 4. Salva no disco com nome controlado (UUID — nunca usa o filename original)
@@ -149,16 +131,20 @@ def upload_attachment(
                 if not chunk:
                     break
                 bytes_written += len(chunk)
-                # Re-validação de tamanho durante o streaming (evita abuso de memória)
-                if bytes_written > MAX_FILE_SIZE:
+                # Re-validação de tamanho durante o streaming.
+                # #7: usa effective_max_size (1 MB para guests).
+                if bytes_written > effective_max_size:
                     f.close()
                     try:
                         os.remove(stored_path)
                     except OSError:
                         pass
+                    limit_mb = effective_max_size // (1024 * 1024)
+                    user_type = "convidado" if is_guest else "comum"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Arquivo excede o limite máximo de 10 MB durante o upload.",
+                        detail=f"Arquivo excede o limite máximo de {limit_mb} MB "
+                               f"para usuários {user_type}s durante o upload.",
                     )
                 f.write(chunk)
     except HTTPException:

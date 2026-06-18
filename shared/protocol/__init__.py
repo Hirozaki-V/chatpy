@@ -10,6 +10,8 @@ from .client_events import (
     RoomJoinPayload,
     RoomCreatePayload,
     DmStartPayload,
+    UserTypingPayload,
+    MessageSendFederatedPayload,
 )
 from .server_events import (
     AuthSuccessPayload,
@@ -23,6 +25,7 @@ from .server_events import (
     AttachmentResponsePayload,
     FriendAcceptedPayload,
     FriendRemovedPayload,
+    UserTypingBroadcastPayload,
 )
 
 EVENT_PAYLOAD_MAP: Dict[EventType, Type[BaseModel]] = {
@@ -32,6 +35,8 @@ EVENT_PAYLOAD_MAP: Dict[EventType, Type[BaseModel]] = {
     EventType.ROOM_JOIN: RoomJoinPayload,
     EventType.ROOM_CREATE: RoomCreatePayload,
     EventType.DM_START: DmStartPayload,
+    EventType.USER_TYPING: UserTypingPayload,
+    EventType.MESSAGE_SEND_FEDERATED: MessageSendFederatedPayload,
     EventType.AUTH_SUCCESS: AuthSuccessPayload,
     EventType.MESSAGE_RECEIVE: MessageReceivePayload,
     EventType.USER_PRESENCE: UserPresencePayload,
@@ -42,6 +47,7 @@ EVENT_PAYLOAD_MAP: Dict[EventType, Type[BaseModel]] = {
     EventType.FRIEND_REQUEST_RECEIVED: FriendRequestReceivedPayload,
     EventType.FRIEND_ACCEPTED: FriendAcceptedPayload,
     EventType.FRIEND_REMOVED: FriendRemovedPayload,
+    EventType.USER_TYPING_BROADCAST: UserTypingBroadcastPayload,
 }
 
 
@@ -69,6 +75,8 @@ __all__ = [
     "RoomJoinPayload",
     "RoomCreatePayload",
     "DmStartPayload",
+    "UserTypingPayload",
+    "MessageSendFederatedPayload",
     "AuthSuccessPayload",
     "MessageReceivePayload",
     "UserPresencePayload",
@@ -80,6 +88,7 @@ __all__ = [
     "AttachmentResponsePayload",
     "FriendAcceptedPayload",
     "FriendRemovedPayload",
+    "UserTypingBroadcastPayload",
     "EVENT_PAYLOAD_MAP",
     "parse_payload",
 ]
