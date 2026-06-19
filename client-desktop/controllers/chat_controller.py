@@ -1,6 +1,5 @@
 import html
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -39,6 +38,8 @@ class ChatController(QObject):
     notification_requested = Signal(str, str)
     connection_status_changed = Signal(str)
     status_message = Signal(str, int)
+    # BUG2-FIX: signal dedicado para erros que devem mostrar dialog (não status bar)
+    error_dialog = Signal(str, str)  # (title, message)
     # P1-3: emitido quando outro usuário está digitando.
     # Args: (tab_name, username) — tab_name identifica a sala/DM onde mostrar.
     typing_received = Signal(str, str)
@@ -588,6 +589,12 @@ class ChatController(QObject):
     # Salas
     # ──────────────────────────────────────────────────────────────────────
     def create_room(self, name: str, is_private: bool, password: Optional[str] = None, description: Optional[str] = None):
+        """
+        BUG2-FIX: erros de criação de sala agora mostram QMessageBox em vez de
+        status bar. Antes, "Já existe uma sala com este nome" aparecia lá no
+        canto inferior da janela onde o usuário podia não perceber. Agora abre
+        um dialog modal que bloqueia até o usuário clicar OK.
+        """
         if not name.startswith("#"):
             name = f"#{name}"
         try:
@@ -619,10 +626,19 @@ class ChatController(QObject):
             else:
                 # Fallback: mensagem original truncada
                 friendly = err_str[:200] if err_str else "Erro desconhecido ao criar sala."
-            # Emite para a UI exibir na status bar (visível para o usuário)
+            # BUG2-FIX: emite error_dialog em vez de status_message — abre QMessageBox
+            self.error_dialog.emit("Erro ao criar sala", friendly)
+            # Também emite status_message para feedback adicional na status bar
             self.status_message.emit(friendly, 5000)
 
     def load_room_members(self, room_name: str) -> List[Dict[str, Any]]:
+        """Carrega membros da sala em background.
+
+        SECURITY (auditoria-2026-06): agora usa _uuid_maps_lock ao mutar
+        user_uuid_map. Antes, threads de background mutavam o dict
+        enquanto a main thread iterava — RuntimeError: dictionary changed
+        size during iteration.
+        """
         if not self.state.token:
             return []
         room_uuid = self.state.room_uuid_map.get(room_name)
@@ -630,9 +646,11 @@ class ChatController(QObject):
             return []
         try:
             members = self.service.api.get_room_members(self.state.token, room_uuid)
-            for m in members:
-                uname = m["username"]
-                self.state.user_uuid_map[uname] = m["user_id"]
+            # Aplica o lock só ao mutar o dict compartilhado
+            with self.state._uuid_maps_lock:
+                for m in members:
+                    uname = m["username"]
+                    self.state.user_uuid_map[uname] = m["user_id"]
             return members
         except Exception as e:
             logger.error(f"Erro ao carregar membros da sala {room_name}: {e}")
@@ -797,6 +815,18 @@ class ChatController(QObject):
     # Envio de mensagens
     # ──────────────────────────────────────────────────────────────────────
     def send_message(self, content: str, attachment_id: Optional[str] = None):
+        """
+        BUG1-FIX: agora o remetente também vê o anexo que enviou (link de download).
+
+        Antes: no caminho de sala (active.startswith("#")), o código só chamava
+        send_room_message e retornava — não construía msg_payload com
+        attachment_payload. O destinatário recebia via WebSocket (com attachment),
+        mas o remetente nunca via o próprio anexo na própria tela — só via o texto
+        "[Anexo: arquivo.png]" sem link.
+
+        Agora: tanto sala quanto DM constroem msg_payload com attachment_payload
+        se houver anexo. O remetente vê o link de download igual ao destinatário.
+        """
         if not content.strip() or not self.state.token:
             return
 
@@ -817,6 +847,7 @@ class ChatController(QObject):
                 self.service.send_room_message(room_uuid, content, attachment_id)
             else:
                 self.status_message.emit(f"Erro: Sala {active} não encontrada ou não mapeada localmente.", 3000)
+                return
         elif active.startswith("@"):
             receiver_name = active.lstrip("@")
             receiver_uuid = self.state.user_uuid_map.get(receiver_name)
@@ -833,14 +864,7 @@ class ChatController(QObject):
                         if new_uuid:
                             self.service.send_private_message(new_uuid, content, attachment_id)
                             # Adiciona localmente (via signal para thread-safety)
-                            now_str = datetime.now().isoformat()
-                            msg_payload = {
-                                "sender": self.state.username,
-                                "content": content,
-                                "timestamp": now_str,
-                                "attachment": None,
-                            }
-                            self.message_added.emit(active, msg_payload)
+                            self._append_local_message(active, content, attachment_id)
                         else:
                             self.status_message.emit(
                                 f"Erro: Usuário {receiver_name} não encontrado ou está offline.", 3000
@@ -851,10 +875,28 @@ class ChatController(QObject):
                 return
 
             self.service.send_private_message(receiver_uuid, content, attachment_id)
+        else:
+            return
 
-            now_str = datetime.now().isoformat()
-            attachment_payload = None
-            if attachment_id and attachment_id in self.state.attachment_cache:
+        # BUG1-FIX: unificado — tanto sala quanto DM constroem msg_payload com
+        # attachment_payload se houver anexo. Antes só DM fazia isto.
+        self._append_local_message(active, content, attachment_id)
+
+    def _append_local_message(self, active: str, content: str, attachment_id: Optional[str] = None):
+        """
+        BUG1-FIX: helper que constrói msg_payload com attachment_payload e emite
+        message_added. Usado tanto para sala quanto DM — antes era duplicado.
+
+        BUG3-FIX: agora constrói attachment_payload mesmo se o anexo não estiver
+        no cache (S1-FIX só cacheia imagens). Para anexos não-imagem, usamos
+        filename do content e file_size=0 (o destinatário recebe do servidor
+        via WebSocket com os dados completos).
+        """
+        now_str = datetime.now().isoformat()
+        attachment_payload = None
+        if attachment_id:
+            # Tenta pegar do cache (imagens)
+            if attachment_id in self.state.attachment_cache:
                 file_bytes, mime_type = self.state.attachment_cache[attachment_id]
                 attachment_payload = {
                     "id": attachment_id,
@@ -863,17 +905,29 @@ class ChatController(QObject):
                     "file_size": len(file_bytes),
                     "mime_type": mime_type,
                 }
+            else:
+                # BUG3-FIX: anexo não está no cache (não é imagem) — ainda
+                # assim constrói attachment_payload para o remetente ver o link.
+                # file_size e mime_type serão 0/unknown — o destinatário recebe
+                # os dados completos via WebSocket do servidor.
+                attachment_payload = {
+                    "id": attachment_id,
+                    "url": f"/api/attachments/{attachment_id}/download",
+                    "filename": content.replace("[Anexo: ", "").rstrip("]"),
+                    "file_size": 0,
+                    "mime_type": "application/octet-stream",
+                }
 
-            msg_payload = {
-                "sender": self.state.username,
-                "content": content,
-                "timestamp": now_str,
-                "attachment": attachment_payload,
-            }
-            if active not in self.state.messages:
-                self.state.messages[active] = []
-            self.state.messages[active].append(msg_payload)
-            self.message_added.emit(active, msg_payload)
+        msg_payload = {
+            "sender": self.state.username,
+            "content": content,
+            "timestamp": now_str,
+            "attachment": attachment_payload,
+        }
+        if active not in self.state.messages:
+            self.state.messages[active] = []
+        self.state.messages[active].append(msg_payload)
+        self.message_added.emit(active, msg_payload)
 
     # ──────────────────────────────────────────────────────────────────────
     # Slots que tratam sinais vindos do ConnectionService
@@ -920,10 +974,14 @@ class ChatController(QObject):
                 }
 
                 if room_id:
-                    room_name = next(
-                        (name for name, uid in self.state.room_uuid_map.items() if uid == room_id),
-                        None,
-                    )
+                    # SECURITY: itera room_uuid_map sob lock para evitar
+                    # RuntimeError se uma thread de background mutar o dict
+                    # simultaneamente.
+                    with self.state._uuid_maps_lock:
+                        room_name = next(
+                            (name for name, uid in self.state.room_uuid_map.items() if uid == room_id),
+                            None,
+                        )
                     if room_name:
                         if room_name not in self.state.messages:
                             self.state.messages[room_name] = []
@@ -1061,11 +1119,13 @@ class ChatController(QObject):
 
                 if room_id:
                     # Sala: encontra o nome da aba pelo UUID
-                    tab_name = next(
-                        (name for name, uid in self.state.room_uuid_map.items()
-                         if uid == room_id),
-                        None,
-                    )
+                    # SECURITY: itera sob lock para evitar RuntimeError
+                    with self.state._uuid_maps_lock:
+                        tab_name = next(
+                            (name for name, uid in self.state.room_uuid_map.items()
+                             if uid == room_id),
+                            None,
+                        )
                 elif receiver_id:
                     # DM: o nome da aba é @<username>
                     tab_name = f"@{username}"

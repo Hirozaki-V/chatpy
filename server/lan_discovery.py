@@ -17,8 +17,7 @@ Configuração:
 import os
 import socket
 import logging
-import threading
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 logger = logging.getLogger("chatpy.lan_discovery")
 
@@ -81,7 +80,6 @@ def start_announcing(server_name: str = "ChatPy Server", port: int = None):
     local_ip = get_local_ip()
 
     try:
-        import zeroconf as _zc
         zc = Zeroconf()
         info = ServiceInfo(
             type_=_SERVICE_TYPE,
@@ -153,7 +151,7 @@ def discover_servers(timeout: float = 3.0) -> List[Dict[str, str]]:
     try:
         zc = Zeroconf()
         listener = ChatPyListener()
-        browser = ServiceBrowser(zc, _SERVICE_TYPE, listener)
+        ServiceBrowser(zc, _SERVICE_TYPE, listener)
 
         # Espera o timeout coletar respostas
         import time

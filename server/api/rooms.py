@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 # Optional já importado acima
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, Room, RoomMember, Message
 from server.api.dependencies import get_current_user
@@ -29,10 +29,15 @@ router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
 
 class CreateRoomRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=50)
+    # SECURITY: name e description NÃO podem conter < > ' " para evitar
+    # stored XSS no painel admin (que renderiza via innerHTML) e em
+    # qualquer outro cliente que renderize HTML sem escapar. Antes, o
+    # schema aceitava strings livres — bug crítico que permitia account
+    # takeover de admin via room name malicioso. Ver auditoria-2026-06.
+    name: str = Field(..., min_length=2, max_length=50, pattern=r"^[^<>\"'\\\\]+$")
     is_private: bool = Field(False)
     password: Optional[str] = Field(None)
-    description: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = Field(None, max_length=255, pattern=r"^[^<>\"'\\\\]*$")
 
 
 class RoomResponse(BaseModel):
@@ -402,7 +407,9 @@ def explore_rooms_endpoint(
 class UpdateRoomRequest(BaseModel):
     is_private: Optional[bool] = Field(None, description="Altera privacidade da sala")
     password: Optional[str] = Field(None, description="Nova senha da sala (ou string vazia para remover a senha)")
-    description: Optional[str] = Field(None, description="Nova descrição da sala")
+    # SECURITY: same pattern as CreateRoomRequest.description — rejeita
+    # caracteres que poderiam quebrar innerHTML no admin.
+    description: Optional[str] = Field(None, max_length=255, pattern=r"^[^<>\"'\\\\]*$")
 
 
 @router.put("/{room_id}", response_model=RoomResponse)

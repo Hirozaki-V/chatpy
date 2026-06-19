@@ -4,19 +4,20 @@ O ChatPy V1 usava uma tabela `invites` para solicitações de amizade. O V2 subs
 
 ## Script de migração
 
-O script `scripts/migrate_invites_to_friendships.py` converte dados antigos:
+O script one-shot `scripts/migrate_invites_to_friendships.py` (que rodava a
+conversão de dados antigos) foi **removido do repositório** em 2026-06 — todos
+os deploys conhecidos já tinham rodado a migração e a tabela `invites` não
+existe mais no schema V2. Se você mantém um fork antigo com a tabela `invites`
+ainda presente, faça a migração manualmente via SQL dump/restore ou rode o
+alembic stamp em uma versão anterior.
 
-```bash
-python scripts/migrate_invites_to_friendships.py [caminho_do_banco.db]
-```
+## O que o script fazia
 
-## O que o script faz
-
-1. Verifica se a tabela `invites` existe
+1. Verificava se a tabela `invites` existia
 2. Para cada invite não rejeitado:
-   - Verifica se já existe friendship correspondente (pula se sim)
-   - Insere em `friendships` com status apropriado (pending/accepted)
-3. Remove a tabela `invites` antiga
+   - Verificava se já existia friendship correspondente (pula se sim)
+   - Inseria em `friendships` com status apropriado (pending/accepted)
+3. Removia a tabela `invites` antiga
 
 ## Status de migração
 

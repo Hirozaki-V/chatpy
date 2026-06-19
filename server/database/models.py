@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Table, func, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Integer
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.types import TypeDecorator, CHAR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID

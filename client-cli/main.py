@@ -1,15 +1,14 @@
 import os
 import sys
 import asyncio
-import html
+import signal as _signal
+from collections import deque
 from datetime import datetime
 from typing import Optional
 import typer
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.live import Live
-from rich.panel import Panel
-from rich.text import Text
 
 # Garante que o diretório raiz do projeto está no path para importar shared/
 current_dir = os.path.abspath(os.path.dirname(__file__))
@@ -34,6 +33,53 @@ except ImportError:
     WINDOWS_KEYBOARD = False
 
 
+def _friendly_auth_error(e: Exception, context: str = "login") -> str:
+    """
+    Traduz exceções HTTP/pydantic para mensagens amigáveis em PT-BR.
+
+    Reaproveita a lógica do ChatController._friendly_auth_error (desktop)
+    para que CLI e Desktop tenham paridade na UX de erro de auth.
+    """
+    msg = str(e)
+    # Tenta extrair detail de httpx.HTTPStatusError
+    try:
+        pass
+        # httpx errors têm .response
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    detail = body.get("detail", "")
+                    if detail:
+                        msg = detail
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    msg_lower = msg.lower()
+
+    # Casos comuns
+    if "string_too_short" in msg_lower or "min_length" in msg_lower or ("senha" in msg_lower and "8" in msg_lower):
+        return "A senha deve ter no mínimo 8 caracteres."
+    if "string_too_long" in msg_lower or "max_length" in msg_lower:
+        return "Um dos campos excede o tamanho máximo permitido."
+    if "value_error" in msg_lower and "password" in msg_lower:
+        return "A senha deve conter ao menos uma letra e um número."
+    if "pattern" in msg_lower or "username" in msg_lower and "invalid" in msg_lower:
+        return "Username deve conter apenas letras, números, underscore ou hífen (3-50 caracteres)."
+    if "already" in msg_lower or "já cadastrado" in msg_lower or "taken" in msg_lower:
+        return "Nome de usuário já cadastrado. Escolha outro."
+    if "incorret" in msg_lower or "invalid credentials" in msg_lower:
+        return "Usuário ou senha incorretos."
+    if "422" in msg or "validation" in msg_lower:
+        return f"Dados inválidos: {msg}"
+    if "connection" in msg_lower or "refused" in msg_lower or "timeout" in msg_lower:
+        return "Não foi possível conectar ao servidor. Verifique se ele está rodando."
+    return msg
+
+
 # Estado global do cliente CLI
 class ClientState:
     def __init__(self):
@@ -42,7 +88,16 @@ class ClientState:
         self.active_tab = "#geral"
         self.joined_rooms = ["#geral"]
         self.online_users = []
-        self.messages = {"#geral": ["[Sistema] Bem-vindo ao ChatPy V2! Digite /help para ver os comandos."]}
+        # MEMORY LEAK FIX (auditoria-2026-06): antes, messages era dict de
+        # list sem cap. Sessão de 8h em sala ativa acumulava centenas de MB.
+        # Agora usamos deque(maxlen=CLI_MAX_MESSAGES_PER_TAB) para descartar
+        # as mensagens mais antigas automaticamente.
+        self.messages = {
+            "#geral": deque(
+                ["[Sistema] Bem-vindo ao ChatPy V2! Digite /help para ver os comandos."],
+                maxlen=CLI_MAX_MESSAGES_PER_TAB,
+            )
+        }
         self.current_input = ""
         self.status = "online"
         self.room_uuid_map = {}  # nome -> uuid
@@ -79,6 +134,11 @@ class ClientState:
 
 # Janela de tempo (em segundos) que o indicador de digitação permanece visível
 TYPING_TTL_S = 4.0
+
+# MEMORY LEAK FIX: cap máximo de mensagens mantidas em memória por aba.
+# 500 mensagens é suficiente para o usuário ver contexto recente sem
+# consumir centenas de MB em sessões longas. Configurável via env.
+CLI_MAX_MESSAGES_PER_TAB = int(os.getenv("CLI_MAX_MESSAGES_PER_TAB", "500"))
 
 
 state = ClientState()
@@ -133,11 +193,19 @@ async def fetch_initial_data(api: ApiClient):
         # lento ou indisponível no momento do login.
         _load_cli_history_cache()
 
+        # S7-FIX: mostra dica de tutorial para novos usuários na primeira vez
+        # (se não houver histórico cacheado, é provavelmente primeiro login)
+        if not state.messages.get("#geral"):
+            state.messages["#geral"].append(
+                "[Sistema] 👋 Bem-vindo ao ChatPy! Digite /tutorial para ver um guia rápido, "
+                "ou /help para listar todos os comandos."
+            )
+
         rooms = api.get_rooms(state.token)
         for r in rooms:
             state.room_uuid_map[r["name"]] = r["id"]
             if r["name"] not in state.messages:
-                state.messages[r["name"]] = []
+                state.messages[r["name"]] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
 
         # Ingressa automaticamente na sala geral (se não for membro)
         geral_id = state.room_uuid_map.get("#geral")
@@ -159,7 +227,7 @@ async def fetch_initial_data(api: ApiClient):
             # em conflitos — é a fonte autoritativa). Isto garante que o
             # usuário veja as mensagens novas do servidor, mas preserva as
             # mensagens locais recentes que ainda não foram sincronizadas.
-            state.messages["#geral"] = formatted_history
+            state.messages["#geral"] = deque(formatted_history, maxlen=CLI_MAX_MESSAGES_PER_TAB)
 
         users = api.get_online_users(state.token)
         state.online_users = [u["username"] for u in users]
@@ -188,7 +256,8 @@ def _load_cli_history_cache():
         # Mescla: apenas adiciona abas que não estão em state.messages
         for tab, msgs in cached.items():
             if tab not in state.messages:
-                state.messages[tab] = msgs
+                # MEMORY LEAK FIX: converte para deque com cap
+                state.messages[tab] = deque(msgs, maxlen=CLI_MAX_MESSAGES_PER_TAB)
     except Exception:
         pass  # cache é best-effort
 
@@ -202,8 +271,10 @@ def _save_cli_history_cache():
         import json
         cache_path = cli_history_cache_path(state.username)
         # Limita a 50 mensagens por aba para não crescer indefinidamente
+        # MEMORY LEAK FIX: agora messages é deque — convertemos para lista
+        # antes de slice (deque não suporta [-50:] direto).
         truncated = {
-            tab: msgs[-50:] if isinstance(msgs, list) else []
+            tab: (list(msgs)[-50:] if hasattr(msgs, "__iter__") else [])
             for tab, msgs in state.messages.items()
         }
         with open(cache_path, "w", encoding="utf-8") as f:
@@ -278,7 +349,7 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
                 )
                 if room_name:
                     if room_name not in state.messages:
-                        state.messages[room_name] = []
+                        state.messages[room_name] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
                     state.messages[room_name].append(formatted_msg)
             else:
                 # DM
@@ -287,7 +358,7 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
                     if tab_name not in state.joined_rooms:
                         state.joined_rooms.append(tab_name)
                     if tab_name not in state.messages:
-                        state.messages[tab_name] = []
+                        state.messages[tab_name] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
                     state.messages[tab_name].append(formatted_msg)
 
                     # P1-FIX: registra notificação de DM recebida (paridade
@@ -362,7 +433,7 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
             )
             if room_name and room_name not in state.joined_rooms:
                 state.joined_rooms.append(room_name)
-                state.messages[room_name] = []
+                state.messages[room_name] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
 
         elif event == EventType.ERROR_ALERT.value:
             code = payload.get("code")
@@ -531,9 +602,65 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /promote_admin <user>    - Promover usuário a admin (requer admin)\n"
             "  /demote_admin <user>     - Rebaixar admin a usuário (requer admin)\n"
             "  /quit ou /exit           - Fechar o cliente de chat\n"
+            "  /tutorial                - Mostrar tutorial interativo para iniciantes\n"
             "  (Dica: Pressione a tecla TAB para alternar rapidamente entre abas)"
         )
         state.messages[state.active_tab].append(help_text)
+
+    elif cmd == "/tutorial":
+        # S7-FIX: tutorial interativo para usuários iniciantes.
+        # Mostra os comandos essenciais em sequência didática.
+        tutorial = (
+            "[Sistema] 📚 TUTORIAL DO CHATPY V2\n"
+            "═══════════════════════════════════════════════════════════\n"
+            "\n"
+            "Bem-vindo ao ChatPy! Aqui estão os comandos essenciais:\n"
+            "\n"
+            "1️⃣  NAVEGAÇÃO\n"
+            "   • Digite uma mensagem e pressione Enter para enviar\n"
+            "   • Pressione TAB para alternar entre abas (#geral, @user, etc)\n"
+            "   • /switch #sala  — muda para uma aba específica\n"
+            "\n"
+            "2️⃣  SALAS\n"
+            "   • /rooms              — lista salas disponíveis\n"
+            "   • /explore            — explora salas com contagem de membros\n"
+            "   • /join #sala         — entra numa sala\n"
+            "   • /create #nova_sala  — cria uma sala pública\n"
+            "   • /leave              — sai da sala ativa\n"
+            "   • /members            — lista membros da sala ativa\n"
+            "\n"
+            "3️⃣  MENSAGENS PRIVADAS (DM)\n"
+            "   • /dm username mensagem  — envia DM direta\n"
+            "   • /query @username        — abre aba de DM com alguém\n"
+            "   • /invite username        — envia solicitação de amizade\n"
+            "   • /invites                — vê solicitações pendentes\n"
+            "   • /accept sender_id       — aceita solicitação\n"
+            "   • /friends                — lista seus amigos\n"
+            "\n"
+            "4️⃣  ARQUIVOS\n"
+            "   • /upload /caminho/arquivo.png  — envia arquivo\n"
+            "   • /download <id>                — baixa anexo recebido\n"
+            "\n"
+            "5️⃣  PERFIL E STATUS\n"
+            "   • /whoami        — vê seu perfil (username, admin, guest)\n"
+            "   • /status away   — muda seu status para ausente\n"
+            "   • /notifications — vê notificações recentes\n"
+            "\n"
+            "6️⃣  PERSONALIZAÇÃO\n"
+            "   • /theme dark|light  — alterna tema da interface\n"
+            "   • /typing on|off     — liga/desliga indicador de digitação\n"
+            "   • /beep on|off       — liga/desliga som de notificação\n"
+            "\n"
+            "7️⃣  AJUDA\n"
+            "   • /help     — lista todos os comandos\n"
+            "   • /tutorial — mostra este tutorial novamente\n"
+            "   • /quit     — fecha o cliente\n"
+            "\n"
+            "═══════════════════════════════════════════════════════════\n"
+            "💡 DICA: Pressione TAB para completar comandos automaticamente!\n"
+            "   Comece digitando / e pressione TAB para ver todas as opções."
+        )
+        state.messages[state.active_tab].append(tutorial)
 
     elif cmd in ("/join",):
         if len(parts) < 2:
@@ -562,7 +689,7 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             if room_name not in state.joined_rooms:
                 state.joined_rooms.append(room_name)
             if room_name not in state.messages:
-                state.messages[room_name] = []
+                state.messages[room_name] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
 
             state.active_tab = room_name
             state.messages[room_name].append(f"[Sistema] Entrou na sala {room_name}.")
@@ -616,7 +743,10 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         if target not in state.joined_rooms:
             state.joined_rooms.append(target)
         if target not in state.messages:
-            state.messages[target] = [f"[Sistema] Conversa privada iniciada com {target}."]
+            state.messages[target] = deque(
+                [f"[Sistema] Conversa privada iniciada com {target}."],
+                maxlen=CLI_MAX_MESSAGES_PER_TAB,
+            )
         state.active_tab = target
 
     elif cmd == "/dm":
@@ -655,7 +785,7 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             if tab_name not in state.joined_rooms:
                 state.joined_rooms.append(tab_name)
             if tab_name not in state.messages:
-                state.messages[tab_name] = []
+                state.messages[tab_name] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
 
             t = datetime.now().strftime("%H:%M")
             state.messages[tab_name].append(f"[{t}] <{state.username}> {content}")
@@ -1008,7 +1138,7 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             if room_data["name"] not in state.joined_rooms:
                 state.joined_rooms.append(room_data["name"])
             if room_data["name"] not in state.messages:
-                state.messages[room_data["name"]] = []
+                state.messages[room_data["name"]] = deque(maxlen=CLI_MAX_MESSAGES_PER_TAB)
             state.active_tab = room_data["name"]
             state.messages[room_data["name"]].append(
                 f"[Sistema] Sala {room_data['name']} criada com sucesso!"
@@ -1281,7 +1411,11 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
                 content = _sanitize_text(msg["content"])
                 formatted.append(f"[{t}] <{sender}> {content}")
             # Insere no início da lista de mensagens da aba
-            state.messages[state.active_tab] = formatted + state.messages[state.active_tab]
+            # MEMORY LEAK FIX: messages agora é deque — usamos extendleft
+            # (que insere em ordem reversa) em vez de concatenar listas.
+            # extendleft(formatted_reversed) = insere formatted no início
+            # na ordem correta.
+            state.messages[state.active_tab].extendleft(reversed(formatted))
             # Atualiza cursor: o último item de history é o mais velho desta página
             state.history_offsets[state.active_tab] = history[-1]["id"]
             state.messages[state.active_tab].append(
@@ -1399,7 +1533,7 @@ async def process_chat_message(content: str, api: ApiClient, ws: WebSocketClient
             state.messages[state.active_tab].append(f"[Sistema] Falha ao enviar mensagem privada: {e}")
 
 
-async def input_poller_windows(input_queue: asyncio.Queue):
+async def input_poller_windows(input_queue: asyncio.Queue, ws=None):
     """Captura e renderiza caracteres digitados no console de forma não-bloqueante no Windows."""
     current_input = ""
     while state.running:
@@ -1422,11 +1556,43 @@ async def input_poller_windows(input_queue: asyncio.Queue):
                 current_input += ch
 
             state.current_input = current_input
+            # UX FIX (auditoria-2026-06): envia typing indicator para o
+            # servidor (debounce 2s). Antes, a CLI nunca enviava — usuários
+            # desktop nunca viam "CLI-user está digitando". Paridade unilateral.
+            _maybe_send_typing_indicator(ws)
 
         await asyncio.sleep(0.01)
 
 
-async def input_poller_fallback(input_queue: asyncio.Queue):
+def _maybe_send_typing_indicator(ws):
+    """Envia user.typing para a aba ativa no máximo 1x a cada 2s (debounce)."""
+    import time as _t
+    if not state.show_typing:
+        return
+    if not state.token:
+        return
+    tab = state.active_tab
+    now = _t.time()
+    last_sent = state._last_typing_sent.get(tab, 0.0)
+    if now - last_sent < 2.0:
+        return  # debounce — não spama o servidor
+    state._last_typing_sent[tab] = now
+    try:
+        if tab.startswith("#"):
+            room_uuid = state.room_uuid_map.get(tab)
+            if room_uuid:
+                ws.send_typing_room(room_uuid)
+        elif tab.startswith("@"):
+            target_user = tab[1:]
+            receiver_uuid = state.user_uuid_map.get(target_user)
+            if receiver_uuid:
+                ws.send_typing_dm(receiver_uuid)
+    except Exception:
+        # Typing indicator é best-effort — não deve quebrar o input
+        pass
+
+
+async def input_poller_fallback(input_queue: asyncio.Queue, ws=None):
     """
     Fallback para Unix (macOS/Linux).
 
@@ -1496,7 +1662,23 @@ async def input_poller_fallback(input_queue: asyncio.Queue):
                         yield Completion(candidate, start_position=-len(word))
 
     # prompt_toolkit disponível — input assíncrono nativo com completion.
-    session = PromptSession(completer=ChatPyCompleter())
+    # UX FIX (auditoria-2026-06): adicionamos FileHistory para que a setinha
+    # pra cima recupere comandos anteriores (padrão IRC/WeeChat). Antes,
+    # cada sessão começava sem histórico — fricção alta para usuários
+    # avançados que re-usam comandos.
+    from prompt_toolkit.history import FileHistory
+    try:
+        from server.paths import cli_history_path
+        history_file = str(cli_history_path())
+    except Exception:
+        # Fallback: diretório do usuário
+        import os as _os
+        history_file = _os.path.expanduser("~/.chatpy/cli_command_history.txt")
+    try:
+        history = FileHistory(history_file)
+    except Exception:
+        history = None
+    session = PromptSession(completer=ChatPyCompleter(), history=history)
 
     while state.running:
         try:
@@ -1507,6 +1689,8 @@ async def input_poller_fallback(input_queue: asyncio.Queue):
             if line and line.strip():
                 await input_queue.put(line)
             state.current_input = ""
+            # UX FIX: typing indicator (debounce 2s) — paridade com Desktop
+            _maybe_send_typing_indicator(ws)
         except (EOFError, KeyboardInterrupt):
             # Ctrl+D ou Ctrl+C encerram o cliente
             state.running = False
@@ -1522,9 +1706,9 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
     input_queue = asyncio.Queue()
 
     if WINDOWS_KEYBOARD:
-        poller_task = asyncio.create_task(input_poller_windows(input_queue))
+        poller_task = asyncio.create_task(input_poller_windows(input_queue, ws))
     else:
-        poller_task = asyncio.create_task(input_poller_fallback(input_queue))
+        poller_task = asyncio.create_task(input_poller_fallback(input_queue, ws))
 
     ws.start_listener(
         on_event=lambda ev, pay: asyncio.create_task(handle_ws_event(ev, pay, api)),
@@ -1560,11 +1744,17 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
                 if not state.typing_indicators[tab_name]:
                     del state.typing_indicators[tab_name]
 
+            # MEMORY LEAK FIX: state.messages agora usa deque. Convertemos
+            # para lista para passar à UI (interface.py usa slicing [-100:]
+            # que não é suportado por deque).
+            _raw_msgs = state.messages.get(state.active_tab, [])
+            if hasattr(_raw_msgs, "__iter__") and not isinstance(_raw_msgs, list):
+                _raw_msgs = list(_raw_msgs)
             layout = create_chat_layout(
                 username=state.username,
                 status=state.status,
                 active_tab=state.active_tab,
-                messages=state.messages.get(state.active_tab, []),
+                messages=_raw_msgs,
                 joined_rooms=state.joined_rooms,
                 online_users=state.online_users,
                 current_input=state.current_input,
@@ -1626,6 +1816,50 @@ def main(
 
     api = ApiClient(base_url)
     ws = WebSocketClient(ws_url)
+
+    # SECURITY/UX FIX (auditoria-2026-06): registra signal handlers para
+    # logout limpo quando o usuário fecha o terminal (SIGHUP) ou mata o
+    # processo (SIGTERM/SIGINT). Antes, o `finally` em run_chat não rodava
+    # de forma confiável nesses casos — a sessão JWT ficava ativa no
+    # servidor até expirar e o cache de histórico era perdido.
+    def _signal_handler(signum, frame):
+        # Sinaliza ao live_chat_loop para parar graciosamente
+        state.running = False
+        # Tenta persistir o cache de histórico antes de sair
+        try:
+            _save_cli_history_cache()
+        except Exception:
+            pass
+        try:
+            ws._persist_queue()
+        except Exception:
+            pass
+        try:
+            if state.token:
+                api.logout(state.token)
+        except Exception:
+            pass
+        # Re-raise após uma pequena janela para o loop processar
+        if signum == _signal.SIGINT:
+            # Ctrl+C: deixa o tratamento padrão acontecer após limpeza
+            _signal.signal(_signal.SIGINT, _signal.SIG_DFL)
+            raise KeyboardInterrupt
+        else:
+            # SIGHUP/SIGTERM: sai limpo
+            sys.exit(0)
+
+    for _sig in (_signal.SIGINT, _signal.SIGTERM):
+        try:
+            _signal.signal(_sig, _signal_handler)
+        except (ValueError, OSError):
+            # ValueError acontece se não estivermos na main thread
+            pass
+    # SIGHUP só existe em Unix
+    if hasattr(_signal, "SIGHUP"):
+        try:
+            _signal.signal(_signal.SIGHUP, _signal_handler)
+        except (ValueError, OSError):
+            pass
 
     console.clear()
     console.print("[bold green]========================================[/bold green]")
@@ -1734,7 +1968,12 @@ def main(
                 logged_in = True
                 console.print("\n[bold green]Autenticado com sucesso![/bold green] Carregando interface...")
             except Exception as e:
-                console.print(f"\n[bold red]Falha no Login:[/bold red] {e}\n")
+                # UX FIX (auditoria-2026-06): traduz erros pydantic 422
+                # e erros HTTP comuns para mensagens amigáveis em PT-BR.
+                # Antes, mostrava JSON cru do pydantic que o usuário final
+                # não conseguia interpretar.
+                friendly = _friendly_auth_error(e, "login")
+                console.print(f"\n[bold red]Falha no Login:[/bold red] {friendly}\n")
 
         elif choice == "2":
             try:
@@ -1745,7 +1984,8 @@ def main(
                     "Faça login para entrar.\n"
                 )
             except Exception as e:
-                console.print(f"\n[bold red]Falha no Registro:[/bold red] {e}\n")
+                friendly = _friendly_auth_error(e, "registro")
+                console.print(f"\n[bold red]Falha no Registro:[/bold red] {friendly}\n")
 
     async def run_chat():
         await fetch_initial_data(api)

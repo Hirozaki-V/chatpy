@@ -10,8 +10,6 @@ os.environ["JWT_SECRET"] = "test-jwt-secret-key-for-endpoints-1234"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.main import app
-from server.database.connection import init_db
-from server.database.models import Base
 
 class TestRESTEndpoints(unittest.TestCase):
     @classmethod

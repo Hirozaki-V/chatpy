@@ -3,7 +3,7 @@ import json
 import uuid
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from uuid import UUID
 from sqlalchemy import or_, and_
 
@@ -16,8 +16,6 @@ from server.database.models import (
     User,
     Room,
     RoomMember,
-    Message,
-    PrivateMessage,
     Friendship,
     Attachment,
 )
@@ -37,6 +35,20 @@ class WebSocketDispatcher:
     def __init__(self, manager: ConnectionManager, rate_limiter: RateLimiter):
         self.manager = manager
         self.rate_limiter = rate_limiter
+        # SECURITY (auditoria-2026-06): IP rate limiter, setado pelo main.py
+        # após a construção. Complementar ao rate_limiter por username —
+        # muta o IP inteiro se o agregado de todos usernames daquele IP
+        # exceder o limite. Previne bypass via criação de múltiplos guests.
+        self.ip_rate_limiter = None
+
+    @staticmethod
+    def _extract_client_ip(websocket: Any) -> str:
+        """Extrai IP do cliente de forma segura (respeita trusted proxies)."""
+        try:
+            from server.security_ip import get_client_ip
+            return get_client_ip(websocket) or ""
+        except Exception:
+            return ""
 
     async def dispatch(
         self,
@@ -112,6 +124,27 @@ class WebSocketDispatcher:
                     authenticated_user_id,
                 )
                 return authenticated_user_id
+
+            # SECURITY (auditoria-2026-06): rate limit por IP, complementar
+            # ao por-username. Previne bypass via criação de múltiplos
+            # guests — cada guest tem contador próprio, mas o IP é compartilhado.
+            if self.ip_rate_limiter is not None:
+                client_ip = self._extract_client_ip(websocket)
+                if client_ip and self.ip_rate_limiter.record_and_check(client_ip):
+                    await self.manager.send_personal_message(
+                        {
+                            "event": EventType.ERROR_ALERT.value,
+                            "payload": {
+                                "code": 429,
+                                "message": (
+                                    "Operação bloqueada por limite de frequência por IP "
+                                    "(possível abuso). Tente novamente mais tarde."
+                                ),
+                            },
+                        },
+                        authenticated_user_id,
+                    )
+                    return authenticated_user_id
 
         # 5. Roteamento por Evento
         try:
@@ -736,9 +769,19 @@ class WebSocketDispatcher:
         }
 
         if payload.room_id:
-            # Broadcast para membros da sala (exceto o próprio digitador)
-            def db_get_members():
+            # SECURITY + lookup de membros: valida que o sender É membro da
+            # sala antes de broadcastar. Antes, qualquer user autenticado
+            # podia disparar user.typing em sala alheia — induzia membros
+            # a pensar que alguém (não-membro) estava prestes a postar.
+            def db_get_members_if_member():
                 with get_db() as db:
+                    sender_member = db.query(RoomMember).filter(
+                        RoomMember.room_id == payload.room_id,
+                        RoomMember.user_id == user_id,
+                        RoomMember.is_banned == False,
+                    ).first()
+                    if not sender_member:
+                        return None  # sender não é membro — rejeita silenciosamente
                     members = db.query(RoomMember.user_id).filter(
                         RoomMember.room_id == payload.room_id,
                         RoomMember.is_banned == False,
@@ -746,11 +789,36 @@ class WebSocketDispatcher:
                     ).all()
                     return [m[0] for m in members]
 
-            member_ids = await asyncio.to_thread(db_get_members)
+            member_ids = await asyncio.to_thread(db_get_members_if_member)
+            if member_ids is None:
+                logger.warning(
+                    "user.typing rejeitado: user %s não é membro da sala %s",
+                    user_id, payload.room_id,
+                )
+                return
             await self.manager.broadcast_to_users(broadcast_frame, member_ids)
 
         elif payload.receiver_id:
-            # DM: só envia para o destinatário
+            # SECURITY: valida amizade antes de retransmitir typing de DM.
+            # Antes, qualquer user podia ver "X está digitando..." para qualquer
+            # outro, mesmo sem serem amigos. Agora exigimos amizade ativa.
+            def db_check_friendship():
+                with get_db() as db:
+                    f = db.query(Friendship).filter(
+                        or_(
+                            and_(Friendship.user_id == user_id, Friendship.friend_id == payload.receiver_id),
+                            and_(Friendship.user_id == payload.receiver_id, Friendship.friend_id == user_id),
+                        )
+                    ).first()
+                    return f is not None and f.status == "accepted"
+
+            are_friends = await asyncio.to_thread(db_check_friendship)
+            if not are_friends:
+                logger.warning(
+                    "user.typing DM rejeitado: users %s e %s não são amigos",
+                    user_id, payload.receiver_id,
+                )
+                return
             await self.manager.send_personal_message(broadcast_frame, payload.receiver_id)
 
     async def _handle_send_federated(self, user_id: UUID, payload_data: dict):

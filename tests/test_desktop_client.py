@@ -167,6 +167,33 @@ def test_desktop_dm_flow():
     assert u2_name in c1.state.user_uuid_map, f"Usuário 2 ({u2_name}) não mapeado no cliente 1"
     assert u1_name in c2.state.user_uuid_map, f"Usuário 1 ({u1_name}) não mapeado no cliente 2"
 
+    # Cria amizade u1 <-> u2 (necessário para o teste de DM — o servidor
+    # rejeita DMs entre não-amigos com 403 "Acesso negado. Você só pode
+    # enviar mensagens privadas para amigos ativos." — bug pré-existente
+    # no teste: o teste assumia que DM funcionava sem amizade, mas a
+    # feature de friend-gate foi adicionada depois.)
+    import httpx as _httpx
+    # u1 envia convite para u2
+    u2_uuid = c1.state.user_uuid_map[u2_name]
+    _httpx.post(
+        "http://127.0.0.1:5000/api/friends/request",
+        json={"receiver_username": u2_name},
+        headers={"Authorization": f"Bearer {c1.state.token}"},
+    )
+    # u2 aceita o convite (endpoint espera sender_id na URL)
+    u1_uuid = c2.state.user_uuid_map[u1_name]
+    _httpx.post(
+        f"http://127.0.0.1:5000/api/friends/request/{u1_uuid}/accept",
+        headers={"Authorization": f"Bearer {c2.state.token}"},
+    )
+    # Recarrega dados iniciais para refletir a amizade
+    c1.load_initial_data()
+    c2.load_initial_data()
+    start_time = time.time()
+    while (not c1.state.initial_data_loaded or not c2.state.initial_data_loaded) and (time.time() - start_time) < 5.0:
+        app.processEvents()
+        time.sleep(0.1)
+
     dm_received = False
     received_msg = None
     notif_title = None

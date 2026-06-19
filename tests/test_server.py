@@ -2,8 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone, timedelta
-from uuid import uuid4, UUID
-import asyncio
+from uuid import uuid4
 
 # Configura banco de dados temporário para testes isolados antes de importar a conexão
 TEST_DB_FILE = "test_chatpy.db"
@@ -11,14 +10,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_FILE}"
 os.environ["JWT_SECRET"] = "test-jwt-secret-key-for-unit-tests-1234"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from server.database.connection import init_db, get_db, SessionLocal
-from server.database.models import User, Room, RoomMember, Message, PrivateMessage, Friendship, Session as DbSession
+from server.database.connection import init_db, SessionLocal
+from server.database.models import User, Room, RoomMember, Session as DbSession
 from server.auth.security import hash_password, verify_password, create_access_token, decode_access_token
 from server.auth.service import registrar_usuario, autenticar_usuario, UsernameTakenError, InvalidCredentialsError
 from server.websocket.rate_limit import RateLimiter
 from server.websocket.manager import ConnectionManager
 from server.websocket.dispatcher import WebSocketDispatcher
-from shared.events import EventType
 
 class MockWebSocket:
     def __init__(self):

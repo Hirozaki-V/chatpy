@@ -16,7 +16,7 @@ Este módulo oferece:
 from __future__ import annotations
 
 import logging
-from typing import Callable, Any, Optional, TypeVar
+from typing import Callable, Optional, TypeVar
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 

@@ -1,21 +1,34 @@
 # Auditoria e Correções — ChatPy V2 (2026-06)
 
-**Status:** Implementado (4 ciclos)
+**Status:** Implementado (5 ciclos)
 **Autor:** Análise técnica independente
 **Escopo:** Backend, frontend (Desktop + CLI), shared, testes, segurança
 
 ## Resumo Executivo
 
 Foram identificados **8 bugs críticos (P0)** e **7 problemas importantes (P1)** no primeiro ciclo,
-mais **8 problemas (P1 segunda rodada)** no segundo ciclo, **7 problemas (T terceira rodada)**
-no terceiro ciclo, e **5 problemas (Q quarta rodada)** no quarto ciclo. Todos os P0 e a grande
-maioria dos P1/T/Q foram corrigidos. Adicionamos **88 testes de regressão** (25 + 29 + 23 + 11).
-A suíte de testes passou de 51 para **139 testes passando** (as 2 falhas restantes são
-pré-existentes e não relacionadas).
+mais **8 problemas (P1 segunda rodada)** no segundo, **7 problemas (T terceira rodada)** no
+terceiro, **5 problemas (Q quarta rodada)** no quarto, e **5 melhorias (S quinta rodada)** no
+quinto. Todos os P0 e a grande maioria dos P1/T/Q/S foram corrigidos. Adicionamos **102 testes
+de regressão** (25 + 29 + 23 + 11 + 14). A suíte de testes passou de 51 para **153 testes
+passando** (as 2 falhas restantes são pré-existentes e não relacionadas).
 
-### Ciclo 4 — Novos Fixes (deste ciclo)
+### Ciclo 5 — Novas Melhorias (deste ciclo)
 
-Adicionados após quarta análise independente:
+Adicionados após quinta análise (relatório externo):
+
+1. **Upload no Desktop agora usa streaming** — não carrega arquivo inteiro na RAM (S1)
+2. **Barras de progresso para download no Desktop** — QProgressDialog com % e MB (S3)
+3. **Jobs de background configuráveis** — intervalos via env vars (S4)
+4. **Tratamento de erros granular no middleware** — diferencia HTTPException, 422, 500 (S5)
+5. **Tutorial interativo na CLI** — comando `/tutorial` + mensagem de boas-vindas (S7)
+
+### Pontos da análise que já estavam implementados (falsos positivos)
+
+- **S2 (funcionalidades admin/federação no Desktop)**: JÁ existem `FederationPeersDialog` e
+  `AdminRoomDialog` acessíveis via menu
+
+### Ciclo 4 — Fixes anteriores
 
 1. **Argon2 com parâmetros fixos** — agora configurável via env (Q2)
 2. **Heartbeat WS usava .ping() que não existe no Starlette** — ping JSON customizado (Q5)
@@ -292,6 +305,85 @@ usuário não tinha como saber que chegou DM sem olhar a tela.
 4. Novo comando `/beep [on|off]` para ligar/desligar (com teste imediato ao ligar)
 
 **Testes:** 3 testes em `TestCLIBeepFunction`.
+
+## Quinta Rodada de Melhorias (S — Ciclo 5)
+
+### S1: Upload streaming no Desktop
+
+**Arquivo:** `client-desktop/ui/main_window.py`
+
+**Problema:** O `_upload_attachment` fazia `with open(file_path, "rb") as f: file_bytes = f.read()`
+— carregava o arquivo inteiro na RAM antes de enviar. Para 50 usuários enviando imagens de 10MB
+simultaneamente, consumia 500MB de RAM só no cliente.
+
+**Correção:** Agora usa `api.upload_attachment_streaming(token, file_path, filename, mime_type)`
+(criado no ciclo 3 T4 mas não usado no Desktop). O httpx recebe o file-like object e faz streaming
+automático. Só carrega no cache de preview se for imagem (PDFs, zips, etc não precisam ficar na RAM).
+
+### S3: Barras de progresso para download
+
+**Arquivos:** `shared/client/api.py`, `client-desktop/ui/main_window.py`
+
+**Problema:** Downloads mostravam apenas "Baixando..." na status bar, sem indicação de progresso.
+Para arquivos grandes, o usuário não sabia se travou ou estava progredindo.
+
+**Correção:**
+1. `download_attachment_streaming` agora aceita `progress_callback(downloaded, total)` chamado
+   a cada chunk. `total` vem do header `Content-Length`.
+2. `_download_attachment_to_file` no Desktop cria `QProgressDialog` modal com:
+   - Barra de progresso 0-100%
+   - Label "Baixando {filename}... {size_mb}/{total_mb} MB"
+   - Botão Cancelar
+   - Só aparece se demorar > 500ms (`setMinimumDuration`)
+3. Thread-safe via `_ProgressBridge` (QObject com signal `update` conectado ao dialog)
+
+### S4: Jobs de background configuráveis
+
+**Arquivo:** `server/main.py`
+
+**Problema:** `_attachment_cleanup_loop` e `_guest_cleanup_loop` tinham `asyncio.sleep(3600)`
+fixo no código. Administradores não podiam ajustar a frequência sem editar código.
+
+**Correção:** Intervalos agora lidos de env vars:
+- `ATTACHMENT_CLEANUP_INTERVAL_SECONDS` (default 3600 = 1 hora)
+- `GUEST_CLEANUP_INTERVAL_SECONDS` (default 3600 = 1 hora)
+
+Defaults mantêm comportamento anterior. Log info no startup mostra o intervalo configurado.
+
+### S5: Tratamento de erros granular no middleware
+
+**Arquivo:** `server/main.py`
+
+**Problema:** O `_error_logger` capturava todas as exceções e retornava 500 genérico
+"Erro interno do servidor". Não diferenciava HTTPException (que tem status e detail próprios)
+de erros inesperados.
+
+**Correção:** Agora diferencia 3 tipos:
+1. **HTTPException** — repassa `status_code` e `detail` originais, loga como WARNING
+2. **RequestValidationError (422)** — repassa com lista de erros, loga como INFO (erro de cliente)
+3. **Outras exceções** — 500 genérico + log completo no servidor
+
+Em modo debug (`LOG_LEVEL=DEBUG`), o 500 inclui `type(e).__name__` e mensagem truncada para
+ajudar o desenvolvedor. Em produção, mensagem genérica para não expor detalhes internos.
+
+### S7: Tutorial interativo na CLI
+
+**Arquivo:** `client-cli/main.py`
+
+**Problema:** A CLI tem 35+ comandos mas nova usuários podiam se sentir perdidos sem um guia.
+
+**Correção:**
+1. Novo comando `/tutorial` mostra guia didático em 7 seções:
+   - Navegação (Enter, TAB, /switch)
+   - Salas (/rooms, /join, /create, /leave, /members)
+   - DMs (/dm, /query, /invite, /accept, /friends)
+   - Arquivos (/upload, /download)
+   - Perfil (/whoami, /status, /notifications)
+   - Personalização (/theme, /typing, /beep)
+   - Ajuda (/help, /tutorial, /quit)
+2. Mensagem de boas-vindas mostrada automaticamente no primeiro login (quando não há cache
+   de histórico): "👋 Bem-vindo ao ChatPy! Digite /tutorial para ver um guia rápido"
+3. `/help` agora lista `/tutorial`
 
 ## Próximos Passos Recomendados (não implementados)
 
@@ -683,7 +775,15 @@ Criamos `tests/test_q_fixes.py` com **11 testes de regressão** cobrindo os fixe
 - `TestCLIBeepFunction` (3 testes): _beep existe, respeita flag, state tem beep_enabled
 - `TestSystemTrayExists` (1 teste): confirma que Desktop já tem system tray (Q10 falso positivo)
 
-**Resultado:** 139 testes passando (antes: 51), mesmas 2 falhas pré-existentes
+Criamos `tests/test_s_fixes.py` com **14 testes de regressão** cobrindo as melhorias do ciclo 5:
+- `TestDesktopUploadStreaming` (1 teste): Desktop usa upload_attachment_streaming
+- `TestDownloadProgressCallback` (2 testes): progress_callback existe e é chamável
+- `TestBackgroundJobsConfigurable` (3 testes): env vars existem, default é 3600
+- `TestErrorMiddlewareGranular` (2 testes): middleware diferencia tipos, debug mode
+- `TestCLITutorial` (3 testes): /tutorial existe, está no help, mensagem de boas-vindas
+- `TestDesktopHasFederationDialog` (3 testes): confirma que Desktop JÁ tem federation/admin (S2 falso positivo)
+
+**Resultado:** 153 testes passando (antes: 51), mesmas 2 falhas pré-existentes
 (`test_federation` com variáveis de ambiente avaliadas em import-time — bug pré-existente
 não relacionado aos fixes).
 
@@ -709,6 +809,8 @@ não relacionado aos fixes).
 | `ARGON2_MEMORY_COST` | `19456` | Memory cost do Argon2 em KiB (19 MiB default; OWASP recomenda 65536) (Q2) |
 | `ARGON2_TIME_COST` | `2` | Time cost do Argon2 (iterações; OWASP recomenda 3) (Q2) |
 | `ARGON2_PARALLELISM` | `1` | Paralelismo do Argon2 (default 1) (Q2) |
+| `ATTACHMENT_CLEANUP_INTERVAL_SECONDS` | `3600` | Intervalo do job de limpeza de anexos órfãos (S4) |
+| `GUEST_CLEANUP_INTERVAL_SECONDS` | `3600` | Intervalo do job de purga de convidados expirados (S4) |
 
 ### Novos endpoints REST
 

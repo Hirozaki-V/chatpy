@@ -16,8 +16,6 @@ import os
 import sys
 import unittest
 import asyncio
-import uuid
-import tempfile
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -32,18 +30,16 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from server.database.connection import init_db, SessionLocal, engine
 from server.database.models import Base, User, PrivateMessage, OneTimePreKey, UserIdentityKey
 from server.auth.security import _get_jwt_secret
-from server.auth.service import registrar_usuario, autenticar_usuario
 from server.api.dependencies import require_admin
 from server.paths import (
     auto_secret_path, federation_key_path, get_data_dir,
     cli_history_cache_path, resolve,
 )
 from server.federation import (
-    _load_or_create_federation_key, _PUBLIC_KEY_PEM,
-    _PRIVATE_KEY, get_public_key_pem,
+    _load_or_create_federation_key,
 )
 from server.bots import EchoBot, bot_uuid_for_name, ChatPyBot
-from server.websocket.rate_limit import UnauthConnectionGuard, RateLimiter
+from server.websocket.rate_limit import UnauthConnectionGuard
 
 
 class TestPathsAndSecretPersistence(unittest.TestCase):

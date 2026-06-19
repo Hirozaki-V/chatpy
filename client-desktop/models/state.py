@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from collections import OrderedDict
 from typing import List, Dict, Any
 
@@ -211,6 +212,12 @@ class ClientState:
         # Mapeamentos auxiliares de IDs para facilitar as chamadas ao protocolo
         self.room_uuid_map: Dict[str, str] = {}  # nome_sala -> uuid
         self.user_uuid_map: Dict[str, str] = {}  # username -> uuid
+        # SECURITY (auditoria-2026-06): lock para proteger room_uuid_map e
+        # user_uuid_map de race conditions. Antes, threads de background
+        # (load_room_members) mutavam esses dicts enquanto a main thread
+        # iterava (tab completion, _on_event_received) — causava
+        # RuntimeError: dictionary changed size during iteration.
+        self._uuid_maps_lock = threading.Lock()
         
         # Gerenciamento de Amizade / Convites
         self.friends: List[str] = []

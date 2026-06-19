@@ -4,7 +4,6 @@ Testes para o módulo de federação.
 import os
 import sys
 import unittest
-from uuid import uuid4
 
 TEST_FED_DB = "test_federation.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_FED_DB}"
@@ -17,12 +16,7 @@ os.environ["REST_RATE_LIMIT_ENABLED"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.database.connection import init_db, SessionLocal, engine
-from server.database.models import Base, ServerPeer, User
-
-import importlib
-import server.federation
-importlib.reload(server.federation)
-
+from server.database.models import Base, ServerPeer
 from server.federation import (
     parse_federated_username,
     find_peer_for_domain,
@@ -44,12 +38,8 @@ class TestFederation(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.db.close()
-        engine.dispose()
         if os.path.exists(TEST_FED_DB):
-            try:
-                os.remove(TEST_FED_DB)
-            except PermissionError:
-                pass
+            os.remove(TEST_FED_DB)
 
     def setUp(self):
         # Limpa peers antes de cada teste

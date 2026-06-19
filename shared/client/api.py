@@ -376,6 +376,7 @@ class ApiClient:
     def download_attachment_streaming(
         self, token: str, attachment_id: str, save_path: str,
         chunk_size: int = 1024 * 1024,
+        progress_callback=None,
     ) -> int:
         """
         T4-FIX: download de anexo via streaming (não carrega arquivo inteiro na RAM).
@@ -384,11 +385,16 @@ class ApiClient:
         resposta HTTP inteira na memória. Para um anexo de 10MB, consumia
         10MB de RAM. Agora escrevemos direto no disco em chunks de 1MB.
 
+        S3-FIX: agora aceita progress_callback(bytes_baixados, total_bytes)
+        para que o cliente possa mostrar barra de progresso. total_bytes
+        vem do header Content-Length (ou 0 se não informado).
+
         Args:
             token: JWT do usuário
             attachment_id: UUID do anexo
             save_path: caminho onde salvar o arquivo
             chunk_size: tamanho do chunk em bytes (default 1MB)
+            progress_callback: função opcional (bytes_baixados, total_bytes) -> None
 
         Returns:
             Número de bytes baixados.
@@ -406,10 +412,19 @@ class ApiClient:
                     # Lê o corpo do erro (pequeno) para extrair detail
                     error_body = res.read().decode("utf-8", errors="replace")
                     raise ValueError(f"Erro {res.status_code} no download: {error_body[:200]}")
+                # S3-FIX: pega total do Content-Length para barra de progresso
+                content_length = res.headers.get("content-length")
+                total_expected = int(content_length) if content_length else 0
                 with open(save_path, "wb") as f:
                     for chunk in res.iter_bytes(chunk_size=chunk_size):
                         f.write(chunk)
                         total_bytes += len(chunk)
+                        # S3-FIX: notifica progresso
+                        if progress_callback:
+                            try:
+                                progress_callback(total_bytes, total_expected)
+                            except Exception:
+                                pass  # callback é best-effort
         except httpx.RequestError as e:
             raise ValueError(f"Erro de conexão no download: {e}")
         return total_bytes

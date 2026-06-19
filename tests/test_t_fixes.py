@@ -10,11 +10,6 @@ import os
 import sys
 import unittest
 import asyncio
-import tempfile
-import time
-import uuid
-from datetime import datetime, timezone
-from uuid import uuid4
 
 TEST_DB = "test_t_fixes.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
@@ -24,10 +19,9 @@ os.environ["REST_RATE_LIMIT_ENABLED"] = "false"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.security_ip import (
-    get_client_ip, _is_trusted_proxy, _load_trusted_proxies,
-    reset_trusted_proxies_cache,
+    get_client_ip, _is_trusted_proxy, reset_trusted_proxies_cache,
 )
-from server.pubsub import LocalPubSubBroker, get_broker, close_broker, CHANNEL_BROADCAST
+from server.pubsub import LocalPubSubBroker, get_broker, close_broker
 
 
 class _MockRequest:
@@ -202,7 +196,6 @@ class TestLRUAttachmentCache(unittest.TestCase):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "client-desktop"))
         try:
             # Tenta importar — se falhar por PySide6, faz import seletivo
-            import importlib
             if "models.state" in sys.modules:
                 del sys.modules["models.state"]
             from models.state import LRUAttachmentCache

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, ServerPeer
-from server.api.dependencies import get_current_user, require_admin
+from server.api.dependencies import require_admin
 
 router = APIRouter(prefix="/api/admin/peers", tags=["federation-admin"])
 

@@ -173,3 +173,134 @@ class UnauthConnectionGuard:
                 "current_global": self._global,
                 "current_ips": len(self._per_ip),
             }
+
+
+# ---------------------------------------------------------------------------
+# SECURITY (auditoria-2026-06): Rate limit de MENSAGENS WS por IP.
+#
+# Antes, o RateLimiter só contava por username. Cada guest recebe username
+# único, então cada guest tinha seu próprio contador. Atacante criando 10
+# guests/IP/min tinha 10 contadores separados = 10x a quota de mensagens.
+# Com 10 IPs de proxy rotativo, 100x. Sem limite por IP, DoS trivial.
+#
+# Esta classe é complementar ao RateLimiter por username: ela muta o IP
+# inteiro se o agregado de todos os usernames daquele IP exceder o limite.
+# ---------------------------------------------------------------------------
+
+class IpRateLimiter:
+    """
+    Rate limiter de mensagens por IP (complementar ao por-username).
+
+    Funcionamento similar ao RateLimiter mas usando IP como chave. Mútua
+    independente — mesmo se o user mudar de username (criar novo guest),
+    o IP continua mutado.
+    """
+
+    def __init__(
+        self,
+        max_messages: int = None,
+        window_seconds: float = 60.0,
+        mute_duration_seconds: float = 120.0,
+    ):
+        self.max_messages = max_messages or int(os.getenv("WS_RATE_LIMIT_MAX_PER_IP", "100"))
+        self.window_seconds = window_seconds
+        self.mute_duration_seconds = mute_duration_seconds
+        self._ip_timestamps: Dict[str, List[float]] = {}
+        self._ip_mute_until: Dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def is_muted(self, ip: str) -> bool:
+        now = time.time()
+        with self._lock:
+            return now < self._ip_mute_until.get(ip, 0.0)
+
+    def record_and_check(self, ip: str) -> bool:
+        """Retorna True se o IP deve ser mutado."""
+        now = time.time()
+        with self._lock:
+            if now < self._ip_mute_until.get(ip, 0.0):
+                return True
+            timestamps = [ts for ts in self._ip_timestamps.get(ip, []) if now - ts < self.window_seconds]
+            timestamps.append(now)
+            self._ip_timestamps[ip] = timestamps
+            if len(timestamps) > self.max_messages:
+                self._ip_mute_until[ip] = now + self.mute_duration_seconds
+                logger.warning(
+                    "IP '%s' mutado por flood WS (%d mensagens em %.1fs).",
+                    ip, len(timestamps), self.window_seconds,
+                )
+                return True
+            return False
+
+    def clear(self, ip: Optional[str] = None):
+        with self._lock:
+            if ip is None:
+                self._ip_timestamps.clear()
+                self._ip_mute_until.clear()
+            else:
+                self._ip_timestamps.pop(ip, None)
+                self._ip_mute_until.pop(ip, None)
+
+
+# ---------------------------------------------------------------------------
+# SECURITY (auditoria-2026-06): Limite de conexões WS AUTENTICADAS por IP.
+#
+# Antes, só havia UnauthConnectionGuard (para pendentes de auth). Uma vez
+# autenticado, o slot era liberado e não havia limite — atacante podia
+# criar 10 guests/IP/min = 600 conexões autenticadas após 1h. Cada conexão
+# consome socket FD + memória. Com 10 IPs, 6000 conexões = ~300MB RAM só
+# em sockets. Esta classe aplica o mesmo padrão do UnauthConnectionGuard
+# mas para conexões JÁ autenticadas.
+# ---------------------------------------------------------------------------
+
+class AuthenticatedConnectionGuard:
+    """
+    Limita conexões WS autenticadas por IP e globalmente.
+
+    Funcionamento:
+      - try_acquire(ip): chamado APÓS auth success no endpoint WS.
+        Retorna True se o IP ainda tem slot, False se excedeu.
+      - release(ip): chamado APÓS disconnect.
+
+    Limite configurável via env WS_MAX_AUTH_PER_IP (default 50) e
+    WS_MAX_AUTH_GLOBAL (default 5000).
+    """
+
+    def __init__(
+        self,
+        max_per_ip: int = None,
+        max_global: int = None,
+    ):
+        self.max_per_ip = max_per_ip or int(os.getenv("WS_MAX_AUTH_PER_IP", "50"))
+        self.max_global = max_global or int(os.getenv("WS_MAX_AUTH_GLOBAL", "5000"))
+        self._per_ip: dict = defaultdict(int)
+        self._global: int = 0
+        self._lock = asyncio.Lock()
+
+    async def try_acquire(self, ip: str) -> bool:
+        async with self._lock:
+            if self._global >= self.max_global:
+                return False
+            if self._per_ip[ip] >= self.max_per_ip:
+                return False
+            self._per_ip[ip] += 1
+            self._global += 1
+            return True
+
+    async def release(self, ip: str):
+        async with self._lock:
+            if self._per_ip[ip] > 0:
+                self._per_ip[ip] -= 1
+                if self._per_ip[ip] == 0:
+                    del self._per_ip[ip]
+            if self._global > 0:
+                self._global -= 1
+
+    async def get_stats(self) -> dict:
+        async with self._lock:
+            return {
+                "max_per_ip": self.max_per_ip,
+                "max_global": self.max_global,
+                "current_global": self._global,
+                "current_ips": len(self._per_ip),
+            }

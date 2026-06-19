@@ -13,7 +13,7 @@ Testes que exigem PySide6 + servidor real ficam em test_desktop_*.py
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # Configura path
 TEST_DESKTOP_DB = "test_desktop_state.db"

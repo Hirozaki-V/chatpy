@@ -7,23 +7,18 @@ from server.database.models import User, PrivateMessage, Friendship
 
 class UserNotFoundError(Exception):
     """Lançada quando o usuário solicitado não existe."""
-    pass
 
 class FriendshipError(Exception):
     """Classe base para erros de amizade."""
-    pass
 
 class FriendshipAlreadyExistsError(FriendshipError):
     """Lançada quando a amizade ou solicitação já existe."""
-    pass
 
 class FriendshipNotFoundError(FriendshipError):
     """Lançada quando a amizade ou solicitação não existe."""
-    pass
 
 class UserBlockedError(FriendshipError):
     """Lançada quando a ação é barrada devido a um bloqueio."""
-    pass
 
 def obter_perfil(db: Session, user_id: uuid.UUID) -> User:
     """

@@ -1,7 +1,7 @@
 import unittest
 import sys
 import os
-from uuid import uuid4, UUID
+from uuid import uuid4
 from datetime import datetime, timezone
 from pydantic import ValidationError
 

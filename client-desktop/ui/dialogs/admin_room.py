@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QComboBox,
     QListWidget, QMessageBox,
 )
-from PySide6.QtCore import Qt, Slot, Signal
+from PySide6.QtCore import Slot, Signal
 
 from ui.helpers import _add_user_list_item, _get_username_from_item
 from utils.async_helper import run_in_background

@@ -14,6 +14,7 @@ import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, UserIdentityKey, OneTimePreKey
@@ -117,7 +118,7 @@ def get_user_keys(
     Busca chaves públicas de um usuário para iniciar handshake X3DH.
     Consome uma One-Time PreKey do pool (marca como used).
     """
-    target = db.query(User).filter(User.username.ilike(username)).first()
+    target = db.query(User).filter(func.lower(User.username) == username.lower()).first()
     if not target:
         raise HTTPException(status_code=404, detail="Usuário não encontrado.")
 
@@ -136,7 +137,7 @@ def get_user_keys(
     # O SQLAlchemy com SQLite não suporta SELECT FOR UPDATE (sem efeito),
     # mas um UPDATE atômico com WHERE used=False garante que só um cliente
     # consome cada prekey — o segundo cliente recebe rowcount=0 e pega outra.
-    from sqlalchemy import update, text
+    from sqlalchemy import update
     one_time_prekey = None
 
     # Tenta consumir a prekey com menor key_id atomicamente

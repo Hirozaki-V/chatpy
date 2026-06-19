@@ -34,7 +34,6 @@ vs_buildtools.exe
 # Certificados de segurança gerados localmente (NÃO devem ir pro repositório público por segurança!)
 *.key
 *.crt
-*.pem
 
 # Arquivos de configuração local
 config_local.json
@@ -54,6 +53,9 @@ legacy/**/config_local.json
 # Client local config & themes
 client-desktop/models/user_config.json
 client-desktop/ui/theme_preference.txt
+client-desktop/models/history_cache_*.json
+offline_queue_*.json
+*.pem
 
 # Uploads
 uploads/

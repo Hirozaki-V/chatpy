@@ -206,12 +206,15 @@ def create_admin_user():
 
         db = SessionLocal()
         try:
-            user = registrar_usuario(db, username, password)
-            # P0-FIX: o primeiro usuário criado via setup.py vira admin automaticamente.
-            # Isto é seguro porque setup.py roda em modo interativo (humanoperado) na
-            # primeira execução — não há como um atacante forçar a promoção aqui.
-            # Após o primeiro admin existir, novos usuários precisam ser promovidos via SQL.
+            # P0-FIX / BUG-CRÍTICO: o primeiro usuário criado via setup.py vira
+            # admin automaticamente. ANTES este código contava DEPOIS de chamar
+            # registrar_usuario() — mas registrar_usuario() faz db.flush(),
+            # que insere o user na transação corrente. Assim, existing_count
+            # sempre retornava >= 1 e a promoção a admin NUNCA acontecia.
+            #
+            # Correção: contar ANTES de criar o usuário.
             existing_count = db.query(User).count()
+            user = registrar_usuario(db, username, password)
             if existing_count == 0:
                 user.is_admin = True
                 db.flush()

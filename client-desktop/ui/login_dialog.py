@@ -2,9 +2,10 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFormLayout, QMenu,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 
 from controllers.chat_controller import ChatController
+from utils.async_helper import run_in_background
 
 class LoginDialog(QDialog):
     """
@@ -129,13 +130,20 @@ class LoginDialog(QDialog):
             self.confirm_password_input.setVisible(False)
             self.submit_btn.setText("ENTRAR")
             self.toggle_mode_btn.setText("Não tem conta? Cadastre-se")
-            self.setFixedSize(380, 310)
+            # BUG1-FIX: setFixedSize com tamanho menor que o minimumSize hint
+            # causava warning "Unable to set geometry" no Windows. O tamanho
+            # real que o Windows calcula (com bordas, título, etc.) é maior
+            # que 310px de altura. Usamos setMinimumSize + resize em vez de
+            # setFixedSize para deixar o Windows ajustar a janela.
+            self.setMinimumSize(380, 310)
+            self.resize(380, 380)  # um pouco maior para acomodar todos os elementos
         else:
             self.confirm_password_label.setVisible(True)
             self.confirm_password_input.setVisible(True)
             self.submit_btn.setText("CADASTRAR")
             self.toggle_mode_btn.setText("Já tem conta? Entrar")
-            self.setFixedSize(380, 360)
+            self.setMinimumSize(380, 380)
+            self.resize(380, 430)
 
     def _handle_submit(self):
         server_text = self.server_input.text().strip()
@@ -200,12 +208,73 @@ class LoginDialog(QDialog):
             self._set_widgets_enabled(False)
             self.controller.register(username, password)
         else:
-            self.status_label.setText("Autenticando e abrindo socket...")
+            # BUG2-FIX: faz healthcheck antes do login para dar feedback claro
+            # se o servidor não estiver pronto. Antes, o login falhava com erro
+            # genérico e o usuário tinha que tentar várias vezes sem saber se
+            # o servidor estava online.
+            self.status_label.setText("Verificando servidor...")
             from ui.theme import get_saved_theme, THEMES
             colors = THEMES[get_saved_theme()]
             self.status_label.setStyleSheet(f"color: {colors['accent_color']};")
             self._set_widgets_enabled(False)
-            self.controller.login(username, password)
+
+            # CORREÇÃO CRÍTICA (cross-thread QWidget):
+            # Antes, o worker chamava self._on_login_result(...) e
+            # self.status_label.setText(...) DIRETAMENTE de dentro da
+            # thread do QThreadPool — operações de QWidget a partir da
+            # thread errada. Agora o worker só emite sinais (que são
+            # marshalados para a main thread via queued connection) e
+            # os slots atualizam a UI com segurança.
+            if not hasattr(self, "_login_status_holder"):
+                from PySide6.QtCore import QObject as _QObj
+                class _LoginStatusHolder(_QObj):
+                    status_update = Signal(str, str)  # message, color_css
+                    login_failed = Signal(str)
+                    login_proceed = Signal(str, str)  # username, password
+                self._login_status_holder = _LoginStatusHolder()
+                self._login_status_holder.status_update.connect(self._on_status_update)
+                self._login_status_holder.login_failed.connect(self._on_login_failed)
+                self._login_status_holder.login_proceed.connect(self._on_login_proceed)
+
+            def _check_and_login():
+                try:
+                    health = self.controller.service.api.health()
+                    if health.get("status") != "healthy":
+                        self._login_status_holder.login_failed.emit(
+                            f"Servidor indisponível: {health.get('detail', 'status não-healthy')}"
+                        )
+                        return
+                    # Servidor OK — pede para a main thread prosseguir com login
+                    self._login_status_holder.status_update.emit(
+                        "Autenticando e abrindo socket...", ""
+                    )
+                    self._login_status_holder.login_proceed.emit(username, password)
+                except Exception as e:
+                    self._login_status_holder.login_failed.emit(
+                        f"Não foi possível conectar ao servidor: {e}"
+                    )
+
+            run_in_background(_check_and_login)
+
+    @Slot(str, str)
+    def _on_status_update(self, message: str, color_css: str):
+        """Atualiza o status_label na main thread (thread-safe)."""
+        try:
+            self.status_label.setText(message)
+            if color_css:
+                self.status_label.setStyleSheet(color_css)
+        except RuntimeError:
+            pass
+
+    @Slot(str)
+    def _on_login_failed(self, message: str):
+        """Trata falha de login na main thread (thread-safe)."""
+        self._on_login_result(False, message)
+
+    @Slot(str, str)
+    def _on_login_proceed(self, username: str, password: str):
+        """Prossegue com o login na main thread após healthcheck OK."""
+        self.controller.login(username, password)
 
     def _on_login_result(self, success: bool, message: str):
         self._set_widgets_enabled(True)
@@ -246,8 +315,20 @@ class LoginDialog(QDialog):
         self.status_label.setStyleSheet(f"color: {colors['accent_color']};")
         self._set_widgets_enabled(False)
 
-        # Roda em thread para não bloquear a UI
-        from utils.async_helper import run_in_background
+        # CORREÇÃO CRÍTICA (cross-thread state mutation):
+        # Antes, o worker mutava self.controller.state.username/token/is_guest
+        # DIRETAMENTE da thread do QThreadPool — race condition com a main
+        # thread que lê state.username durante a inicialização da MainWindow.
+        # Agora o worker só emite signal com os dados, e o slot (na main thread)
+        # aplica no estado com segurança.
+        if not hasattr(self, "_guest_login_holder"):
+            from PySide6.QtCore import QObject as _QObj
+            class _GuestLoginHolder(_QObj):
+                guest_ready = Signal(str, str, bool)  # token, username, is_guest
+                guest_failed = Signal(str)
+            self._guest_login_holder = _GuestLoginHolder()
+            self._guest_login_holder.guest_ready.connect(self._on_guest_ready)
+            self._guest_login_holder.guest_failed.connect(self._on_guest_failed)
 
         def _do_guest_login():
             try:
@@ -260,23 +341,31 @@ class LoginDialog(QDialog):
                 except Exception:
                     username = "guest"
                     is_guest = True
-
-                # Aplica no controller na Main Thread via signal
-                # (reaproveitamos login_result emitindo success=True)
-                from PySide6.QtCore import QMetaObject, Qt as _Qt
-                # Como estamos em thread, usamos QMetaObject.invokeMethod
-                # para chamar o slot na Main Thread — mas é mais simples
-                # setar o estado direto e emitir login_result(True, ...)
-                self.controller.state.username = username
-                self.controller.state.token = token
-                self.controller.state.is_guest = is_guest
-                self.controller.service.connect(token, username)
-                # login_result será emitido por _on_authenticated quando o WS autenticar
+                # Emite signal (marshalado para a main thread)
+                self._guest_login_holder.guest_ready.emit(token, username, is_guest)
             except Exception as e:
-                # Emite falha
-                self.controller.login_result.emit(False, str(e))
+                self._guest_login_holder.guest_failed.emit(str(e))
 
         run_in_background(_do_guest_login)
+
+    @Slot(str, str, bool)
+    def _on_guest_ready(self, token: str, username: str, is_guest: bool):
+        """Aplica estado do guest login na main thread (thread-safe)."""
+        try:
+            self.controller.state.username = username
+            self.controller.state.token = token
+            self.controller.state.is_guest = is_guest
+            # service.connect() pode rodar em background (usa run_coroutine_async
+            # internamente); chamá-lo da main thread é seguro.
+            self.controller.service.connect(token, username)
+            # login_result será emitido por _on_authenticated quando o WS autenticar
+        except RuntimeError:
+            pass
+
+    @Slot(str)
+    def _on_guest_failed(self, message: str):
+        """Trata falha do guest login na main thread (thread-safe)."""
+        self.controller.login_result.emit(False, message)
 
     def _on_register_result(self, success: bool, message: str):
         self._set_widgets_enabled(True)

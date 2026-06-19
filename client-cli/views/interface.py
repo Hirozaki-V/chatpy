@@ -9,7 +9,6 @@ from typing import List
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.text import Text
-from rich.align import Align
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +42,24 @@ THEMES = {
 }
 
 # Arquivo de preferência de tema
-THEME_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cli_theme.txt")
+# UX FIX (auditoria-2026-06): antes, THEME_FILE apontava para o diretório
+# do código-fonte (client-cli/../cli_theme.txt) — em instalações via pip
+# este path é read-only (ex: /usr/lib/python3.x/site-packages/chatpy/),
+# então save_theme() falhava silenciosamente e a preferência era perdida
+# entre sessões. Agora usamos cli_theme_path() de server.paths que
+# resolve para ~/.chatpy/cli_theme.txt (writable por qualquer usuário).
+try:
+    from server.paths import cli_theme_path as _cli_theme_path
+    THEME_FILE = str(_cli_theme_path())
+except Exception:
+    # Fallback: diretório do usuário (~/.chatpy/cli_theme.txt)
+    import os as _os
+    _fallback_dir = _os.path.expanduser("~/.chatpy")
+    try:
+        _os.makedirs(_fallback_dir, exist_ok=True)
+    except Exception:
+        pass
+    THEME_FILE = _os.path.join(_fallback_dir, "cli_theme.txt")
 
 
 def get_saved_theme() -> str:

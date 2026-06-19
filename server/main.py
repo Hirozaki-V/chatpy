@@ -1,6 +1,5 @@
 import os
 import logging
-from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 # Carrega variáveis de arquivo .env ANTES de qualquer import que precise delas
@@ -176,21 +175,34 @@ async def lifespan(app: FastAPI):
 
 
 async def _attachment_cleanup_loop():
-    """Loop que executa a limpeza de anexos órfãos a cada 1 hora."""
+    """
+    Loop que executa a limpeza de anexos órfãos.
+
+    S4-FIX: intervalo agora configurável via env ATTACHMENT_CLEANUP_INTERVAL_SECONDS
+    (default 3600 = 1 hora). Administradores podem ajustar conforme a carga
+    do servidor e políticas de retenção.
+    """
+    interval = int(os.getenv("ATTACHMENT_CLEANUP_INTERVAL_SECONDS", "3600"))
+    logger.info("Job de limpeza de anexos iniciado (intervalo: %ds)", interval)
     while True:
         try:
             await asyncio.to_thread(cleanup_orphan_attachments)
         except Exception as e:
             logger.error("Erro no job de limpeza de anexos: %s", e)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(interval)
 
 
 async def _guest_cleanup_loop():
     """
-    P2-2: Loop que purga contas de convidado expiradas a cada 1 hora.
+    P2-2: Loop que purga contas de convidado expiradas.
     Remove usuários com is_guest=True cujo expires_at < now().
     Cascade delete cuida de sessions, memberships, etc.
+
+    S4-FIX: intervalo agora configurável via env GUEST_CLEANUP_INTERVAL_SECONDS
+    (default 3600 = 1 hora).
     """
+    interval = int(os.getenv("GUEST_CLEANUP_INTERVAL_SECONDS", "3600"))
+    logger.info("Job de limpeza de convidados iniciado (intervalo: %ds)", interval)
     while True:
         try:
             def _do_purge():
@@ -203,7 +215,7 @@ async def _guest_cleanup_loop():
             await asyncio.to_thread(_do_purge)
         except Exception as e:
             logger.error("Erro no job de limpeza de convidados: %s", e)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(interval)
 
 
 async def _backup_loop():
@@ -285,6 +297,41 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# SECURITY: middleware de security headers (CSP, X-Frame-Options, etc.)
+# Camada de defesa em profundidade — mesmo que um XSS escape à sanitização
+# server-side, o CSP bloqueia execução de scripts inline não-permitidos.
+# Aplicado em TODAS as respostas (incluindo /admin, /docs, /api/*).
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    # X-Content-Type-Options: impede MIME sniffing em anexos baixados
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # X-Frame-Options: impede clickjacking via iframe
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    # Referrer-Policy: não vaza URL completa em headers Referer cross-origin
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # HSTS: força HTTPS em produção (1 ano + preload)
+    # Só aplicado se estiver em HTTPS para não quebrar dev local
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains; preload",
+        )
+    # CSP: default-src 'self' — bloqueia assets de terceiros.
+    # /admin tem inline script/style (single-file HTML), então 'unsafe-inline'
+    # é necessário para scripts e styles. Endpoints /api/* não servem HTML,
+    # então o CSP não os afeta.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+        "img-src 'self' data:; frame-ancestors 'none';",
+    )
+    return response
+
+
+# ---------------------------------------------------------------------------
 # #1: Middleware de rate limiting global para REST.
 # Limite padrão: 60 req/min por IP (configurável via env).
 # Endpoints de infra (/health, /metrics, /docs) são isentos.
@@ -305,6 +352,18 @@ if is_rate_limit_enabled():
 # ---------------------------------------------------------------------------
 @app.middleware("http")
 async def _error_logger(request: Request, call_next):
+    """
+    S5-FIX: tratamento de erros mais granular.
+
+    Antes: qualquer exceção não tratada virava 500 genérico "Erro interno
+    do servidor". Agora diferenciamos tipos comuns de erro para dar feedback
+    mais útil ao cliente sem expor detalhes internos:
+      - HTTPException: repassa status e detail originais (FastAPI já faz isto,
+        mas capturamos aqui para logar)
+      - RequestValidationError (422): repassa sem logar como erro (é erro de
+        cliente, não de servidor)
+      - Outras exceções: 500 genérico + log completo no servidor
+    """
     # P2-7: instrumenta latência e contagem de requisições HTTP.
     # Ignora /metrics para não criar loop de auto-incremento.
     import time as _time
@@ -314,17 +373,52 @@ async def _error_logger(request: Request, call_next):
         response = await call_next(request)
         return response
     except Exception as e:
-        logger.error(
-            "Erro não tratado em %s %s: %s",
-            request.method,
-            request.url.path,
-            e,
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Erro interno do servidor."},
-        )
+        # S5-FIX: tratamento granular por tipo de exceção
+        from fastapi import HTTPException as _FastAPIHTTPException
+        from fastapi.exceptions import RequestValidationError as _RVE
+
+        if isinstance(e, _FastAPIHTTPException):
+            # HTTPException já tem status_code e detail — repassa
+            logger.warning(
+                "HTTPException em %s %s: %d %s",
+                request.method, request.url.path,
+                e.status_code, e.detail,
+            )
+            return JSONResponse(
+                status_code=e.status_code,
+                content={"detail": e.detail},
+                headers=getattr(e, "headers", None),
+            )
+        elif isinstance(e, _RVE):
+            # Erro de validação 422 — é erro do cliente, não loga como ERROR
+            logger.info(
+                "Validação falhou em %s %s: %s",
+                request.method, request.url.path, str(e)[:200],
+            )
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "Dados de entrada inválidos.", "errors": e.errors()},
+            )
+        else:
+            # Erro inesperado — loga completo no servidor, mensagem genérica ao cliente
+            logger.error(
+                "Erro não tratado em %s %s: %s",
+                request.method,
+                request.url.path,
+                e,
+                exc_info=True,
+            )
+            # S5-FIX: em modo debug (LOG_LEVEL=DEBUG), inclui a mensagem da
+            # exceção para ajudar o desenvolvedor. Em produção, mensagem genérica.
+            log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+            if log_level == "DEBUG":
+                detail = f"Erro interno: {type(e).__name__}: {str(e)[:200]}"
+            else:
+                detail = "Erro interno do servidor. Verifique os logs do servidor para detalhes."
+            return JSONResponse(
+                status_code=500,
+                content={"detail": detail},
+            )
     finally:
         # P2-7: registra métrica de requisição HTTP (não conta /metrics
         # nem /docs para não inflar artificialmente).
@@ -599,7 +693,7 @@ async def receive_federated_presence_endpoint(req: Request):
 # ---------------------------------------------------------------------------
 # Importa a dependência de autenticação para proteger endpoints admin.
 # P0-FIX: endpoints /api/admin/* agora exigem require_admin (is_admin=True no User)
-from server.api.dependencies import get_current_user as _get_current_user, require_admin as _require_admin
+from server.api.dependencies import require_admin as _require_admin
 
 
 @app.get("/api/admin/backups", tags=["admin"])
@@ -669,9 +763,26 @@ dispatcher = WebSocketDispatcher(manager, rate_limiter)
 
 # P0-FIX: guard de conexões não-autenticadas por IP — previne DoS via
 # milhares de conexões penduradas no timeout de auth (30s)
-from server.websocket.rate_limit import UnauthConnectionGuard
+from server.websocket.rate_limit import (
+    UnauthConnectionGuard,
+    AuthenticatedConnectionGuard,
+    IpRateLimiter,
+)
 unauth_guard = UnauthConnectionGuard()
 app.state.unauth_guard = unauth_guard
+
+# SECURITY (auditoria-2026-06): guard de conexões autenticadas por IP —
+# previne DoS via 10 guests/IP/min = 600 conexões autenticadas em 1h.
+auth_guard = AuthenticatedConnectionGuard()
+app.state.auth_guard = auth_guard
+
+# SECURITY: rate limiter de mensagens WS por IP (complementar ao por-user).
+# Muta o IP inteiro se o agregado de todos usernames daquele IP exceder.
+ip_rate_limiter = IpRateLimiter()
+app.state.ip_rate_limiter = ip_rate_limiter
+
+# Passa o IP rate limiter para o dispatcher usar
+dispatcher.ip_rate_limiter = ip_rate_limiter
 
 # P2-1.2a: Registra o ConnectionManager no módulo de federação para que
 # DMs federadas recebidas sejam entregues via WebSocket ao destinatário.
@@ -715,6 +826,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     authenticated_user_id = None
+    auth_guard_acquired = False
 
     try:
         # Timeout de proteção na etapa de autenticação (30 segundos)
@@ -730,6 +842,24 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 pass
             return
+
+        # SECURITY (auditoria-2026-06): após auth success, aplica o
+        # AuthenticatedConnectionGuard para limitar conexões autenticadas
+        # por IP. Se excedeu, recusa com 1008 e desconecta.
+        if not await auth_guard.try_acquire(client_ip):
+            logger.warning(
+                "WS rejeitada pós-auth por limite de conexões autenticadas: IP=%s",
+                client_ip,
+            )
+            try:
+                await websocket.close(
+                    code=1008,
+                    reason="Muitas conexões autenticadas para este IP.",
+                )
+            except Exception:
+                pass
+            return
+        auth_guard_acquired = True
 
         # Loop principal (Conexão normal)
         while True:
@@ -753,6 +883,9 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         # P0-FIX: libera o slot do guard de conexões não-autenticadas
         await unauth_guard.release(client_ip)
+        # SECURITY: libera o slot do guard de conexões autenticadas
+        if auth_guard_acquired:
+            await auth_guard.release(client_ip)
 
         # Limpeza na desconexão do socket
         if authenticated_user_id:

@@ -16,7 +16,7 @@ disponível em imagens slim sem apt-get install). Esta tabela cobre todos
 os formatos da allowlist em shared/allowed_attachments.py.
 """
 import logging
-from typing import Optional, Set
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

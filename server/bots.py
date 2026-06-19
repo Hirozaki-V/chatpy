@@ -31,9 +31,8 @@ confundia clientes que mostravam a mensagem do bot como se fosse do
 usuário que invocou. Agora cada bot tem identidade própria.
 """
 import logging
-import re
 import uuid
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger("chatpy.bots")

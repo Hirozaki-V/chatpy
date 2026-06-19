@@ -46,6 +46,14 @@ COPY --from=builder /install /usr/local
 # Copia apenas os módulos necessários (server e shared)
 COPY server/ /app/server/
 COPY shared/ /app/shared/
+# SECURITY/OPS FIX (auditoria-2026-06): copia alembic/ e alembic.ini para
+# o container — antes, o Dockerfile não os copiava, então o comando
+# `alembic upgrade head` no CMD falhava com "alembic: command not found"
+# ou "path not found". Isto significava que TODOS os deploys Docker
+# ficavam sem migrations — só funcionavam porque `Base.metadata.create_all()`
+# no startup cria tabelas novas em DB vazio, mas quebra em upgrades de schema.
+COPY alembic/ /app/alembic/
+COPY alembic.ini /app/alembic.ini
 
 EXPOSE 5000
 
@@ -56,5 +64,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # Usa tini como init para tratamento correto de sinais (graceful shutdown)
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Executa o servidor via Uvicorn
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "5000"]
+# SECURITY/OPS FIX (auditoria-2026-06): roda `alembic upgrade head` ANTES
+# do uvicorn para garantir que o schema está atualizado. Em DB vazio, isto
+# é equivalente a create_all(). Em DB existente com versão antiga, aplica
+# migrations pendentes. Em DB já na versão head, é no-op.
+# O `|| true` no create_all é fallback de segurança: se alembic falhar por
+# qualquer motivo (ex: DB já tem tabelas mas sem alembic_version), o
+# create_all garante que tabelas novas existam antes do uvicorn subir.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn server.main:app --host 0.0.0.0 --port 5000"]

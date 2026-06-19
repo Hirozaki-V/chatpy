@@ -24,7 +24,6 @@ usuário atual e SYSTEM. Chamado por todos os arquivos sensíveis (JWT secret,
 chave de federação).
 """
 import os
-import sys
 import subprocess
 import logging
 from pathlib import Path
@@ -214,3 +213,14 @@ def cli_history_cache_path(username: str) -> Path:
     import re
     safe = re.sub(r"[^A-Za-z0-9_-]", "", username) or "default"
     return resolve(f"cli_history_cache_{safe}.json")
+
+
+def cli_history_path() -> Path:
+    """
+    Histórico de comandos da CLI (setinha pra cima).
+
+    Compartilhado entre usuários (não tem chaveamento por username) —
+    comandos são padrão IRC/WeeChat e não contêm dados sensíveis por si.
+    Se o usuário quiser isolamento, pode setar CHATPY_DATA_DIR por usuário.
+    """
+    return resolve("cli_command_history.txt")

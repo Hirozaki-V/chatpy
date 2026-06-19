@@ -15,7 +15,6 @@ import unittest
 import asyncio
 import tempfile
 import time
-import uuid
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
@@ -28,10 +27,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.database.connection import init_db, SessionLocal, engine
 from server.database.models import Base, User, Room, RoomMember, Message
-from shared.magic_numbers import is_safe_attachment, detect_real_mime
-from server.federation_replay import ReplayCache, check_replay, clear_replay_cache
+from shared.magic_numbers import is_safe_attachment
+from server.federation_replay import check_replay, clear_replay_cache
 from server.websocket.manager import ConnectionManager
-from server.websocket.rate_limit import UnauthConnectionGuard
 
 
 class TestMagicNumbers(unittest.TestCase):
@@ -344,7 +342,6 @@ class TestCLINotificationsState(unittest.TestCase):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "client-cli"))
         try:
             # Recarrega para pegar mudanças
-            import importlib
             if "main" in sys.modules:
                 del sys.modules["main"]
             from main import ClientState

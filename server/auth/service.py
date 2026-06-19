@@ -1,5 +1,4 @@
 import uuid
-import time
 import logging
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session as SqlalchemySession
@@ -19,27 +18,22 @@ logger = logging.getLogger(__name__)
 
 class AuthError(Exception):
     """Classe base para erros de autenticação."""
-    pass
 
 
 class UsernameTakenError(AuthError):
     """Lançada quando o nome de usuário escolhido já está em uso."""
-    pass
 
 
 class InvalidCredentialsError(AuthError):
     """Lançada quando a validação de usuário/senha falha."""
-    pass
 
 
 class ValidationError(AuthError):
     """Lançada quando os dados de entrada não passam na validação."""
-    pass
 
 
 class TooManyAttemptsError(AuthError):
     """Lançada quando há muitas tentativas de login falhas (anti brute-force)."""
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +162,12 @@ def registrar_usuario(db: SqlalchemySession, username: str, password: str) -> Us
         raise ValidationError(err)
 
     # Case-insensitive para evitar impersonação visual (Alice vs alice)
-    existing = db.query(User).filter(User.username.ilike(username)).first()
+    # SECURITY (auditoria-2026-06): NÃO usamos .ilike() porque ele interpreta
+    # '%' e '_' como wildcards SQL. Se username="___", casaria com qualquer
+    # user de 3 chars — bug que permitia enumeração e bloqueio de registro
+    # de usuários legítimos. Usamos func.lower() == username.lower() que é
+    # case-insensitive exato, sem wildcards.
+    existing = db.query(User).filter(func.lower(User.username) == username.lower()).first()
     if existing:
         raise UsernameTakenError("Nome de usuário já cadastrado.")
 
@@ -202,7 +201,7 @@ def _generate_guest_username(db: SqlalchemySession) -> str:
     alphabet = _string.ascii_lowercase + _string.digits
     for _ in range(50):  # 50 tentativas — colisão é extremamente improvável
         candidate = _GUEST_PREFIX + "".join(_secrets.choice(alphabet) for _ in range(_GUEST_USERNAME_LEN))
-        if not db.query(User).filter(User.username.ilike(candidate)).first():
+        if not db.query(User).filter(func.lower(User.username) == candidate.lower()).first():
             return candidate
     # Fallback improvável — adiciona UUID suffix para garantir unicidade
     return f"{_GUEST_PREFIX}{uuid.uuid4().hex[:12]}"
@@ -306,7 +305,7 @@ def autenticar_usuario(db: SqlalchemySession, username: str, password: str, ip_a
     # Mensagens de erro genéricas (não revelam se usuário existe)
     generic_err = "Usuário ou senha incorretos."
 
-    user = db.query(User).filter(User.username.ilike(username)).first()
+    user = db.query(User).filter(func.lower(User.username) == username.lower()).first()
     if not user:
         _record_failed_login(db, username, ip_address)
         raise InvalidCredentialsError(generic_err)

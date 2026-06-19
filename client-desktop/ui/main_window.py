@@ -1,15 +1,11 @@
 import os
-import re
 import mimetypes
 import logging
-import threading
-import tempfile
 import html
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, Optional, List, Any
+from typing import Dict
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -17,18 +13,15 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QComboBox, QDialog,
     QInputDialog, QStyle, QSystemTrayIcon,
     QMessageBox, QStatusBar,
-    QFileDialog, QFrame, QTabBar, QApplication, QMenu
+    QFileDialog, QFrame, QTabBar, QApplication
 )
-from PySide6.QtCore import Qt, Slot, Signal, QUrl, QSize, QObject, QTimer, QEvent
+from PySide6.QtCore import Qt, Slot, Signal, QUrl, QTimer
 from PySide6.QtGui import (
     QIcon, QTextCursor, QFont, QActionGroup, QDesktopServices,
-    QPainter, QColor, QPixmap, QKeyEvent, QKeySequence, QShortcut
+    QPainter, QColor, QPixmap, QKeySequence, QShortcut
 )
 
 from controllers.chat_controller import ChatController
-from models.state import ClientState
-from services.connection_service import ConnectionService
-from shared.events import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +44,13 @@ from ui.dialogs import (
     ExploreRoomsDialog,
     AdminRoomDialog,
     NotificationsDialog,
+    FederationPeersDialog,
 )
 # Helpers compartilhados (P1-11: UserRole, sanitização de filename, etc.)
 from ui.helpers import (
     _sanitize_filename,
     _safe_temp_path,
     _file_url_from_path,
-    _USERNAME_ROLE,
     _add_user_list_item,
     _get_username_from_item,
     _clean_tab_text,
@@ -420,6 +413,8 @@ class MainWindow(QMainWindow):
         self.controller.notification_requested.connect(self._on_notification_requested)
         self.controller.connection_status_changed.connect(self._on_connection_status_changed)
         self.controller.status_message.connect(self._on_status_message)
+        # BUG2-FIX: signal de erro para mostrar QMessageBox (não status bar)
+        self.controller.error_dialog.connect(self._on_error_dialog)
         # P1-3: indicador de digitação
         self.controller.typing_received.connect(self._on_typing_received)
         self.image_downloaded_signal.connect(self._on_image_downloaded)
@@ -459,8 +454,54 @@ class MainWindow(QMainWindow):
         self._idle_check_timer.timeout.connect(self._check_idle)
         self._idle_check_timer.start()
 
-        # Instala eventFilter global para capturar mouse/teclado em qualquer widget
-        QApplication.instance().installEventFilter(self)
+        # BUG3-FIX: removido QApplication.instance().installEventFilter(self)
+        #
+        # O eventFilter global no QApplication causava crash com erro:
+        # "QObject::installEventFilter(): Cannot filter events for objects in
+        # a different thread."
+        #
+        # Isto acontecia porque o eventFilter tentava filtrar eventos de
+        # widgets criados em threads background (via run_in_background que
+        # roda no QThreadPool). Qt exige que eventFilter e objeto filtrado
+        # estejam na mesma thread.
+        #
+        # Em vez de eventFilter global, usamos QTimer que periodicamente
+        # atualiza _last_activity_ts checando QApplication.keyboardModifiers()
+        # e mouse position — não precisa de eventFilter.
+        self._idle_activity_timer = QTimer(self)
+        self._idle_activity_timer.setSingleShot(False)
+        self._idle_activity_timer.setInterval(2000)  # checa a cada 2s
+        self._idle_activity_timer.timeout.connect(self._check_activity_polling)
+        self._idle_activity_timer.start()
+
+        # Referência ao cursor global para detectar movimento do mouse
+        from PySide6.QtGui import QCursor
+        self._last_cursor_pos = QCursor.pos()
+        self._last_keyboard_modifiers = QApplication.keyboardModifiers()
+
+    def _check_activity_polling(self):
+        """
+        BUG3-FIX: alternativa ao eventFilter global — polling via QTimer.
+
+        Compara posição atual do cursor e modificadores de teclado com os
+        últimos conhecidos. Se mudaram, registra atividade (para o auto-away).
+        """
+        from PySide6.QtGui import QCursor
+        current_pos = QCursor.pos()
+        current_mods = QApplication.keyboardModifiers()
+
+        if current_pos != self._last_cursor_pos or current_mods != self._last_keyboard_modifiers:
+            self._last_activity_ts = time.time()
+            self._last_cursor_pos = current_pos
+            self._last_keyboard_modifiers = current_mods
+
+            # Se estava em auto-away, volta para online
+            if self._auto_away_active:
+                self._auto_away_active = False
+                try:
+                    run_in_background(lambda: self.controller.change_status("online"))
+                except Exception:
+                    pass
 
     def _setup_keyboard_shortcuts(self):
         """
@@ -844,6 +885,11 @@ class MainWindow(QMainWindow):
 
         P1-6: agora usa QThreadPool via async_helper (limite de concorrência
         controlado pelo Qt) em vez de threading.Thread ilimitado.
+
+        BUG3-FIX: o worker NÃO acessa mais atributos do MainWindow diretamente
+        (self._loading_members_for) de dentro da thread background — isto causava
+        acesso cross-thread a QObject. Agora o guard é gerenciado via signal
+        room_members_loaded_signal, que roda na main thread via queued connection.
         """
         # Guard contra disparos concorrentes para a mesma sala
         if not hasattr(self, "_loading_members_for"):
@@ -852,22 +898,32 @@ class MainWindow(QMainWindow):
             return
         self._loading_members_for.add(room_name)
 
+        # BUG3-FIX: captura apenas o que precisamos (controller e room_name)
+        # sem acessar self (MainWindow) de dentro da thread background.
+        controller = self.controller
+        signal = self.room_members_loaded_signal
+
         def worker():
             try:
-                members = self.controller.load_room_members(room_name)
-                self.room_members_loaded_signal.emit(room_name, members)
+                members = controller.load_room_members(room_name)
+                # Signal emit é thread-safe — Qt faz queued connection
+                # automaticamente quando o receptor está em outra thread.
+                signal.emit(room_name, members)
             except Exception as e:
                 logger.error(f"Erro assíncrono ao carregar membros de {room_name}: {e}")
-            finally:
-                # Libera o guard quando o load termina (sucesso ou erro).
-                # O QThreadPool garante que isto roda em thread separada.
-                self._loading_members_for.discard(room_name)
+                # Emite lista vazia para liberar o guard no slot
+                signal.emit(room_name, [])
 
         # P1-6: usa helper de threading unificado (QThreadPool em vez de Thread direto)
         run_in_background(worker)
 
     @Slot(str, list)
     def _on_room_members_loaded(self, room_name: str, members: list):
+        # BUG3-FIX: libera o guard aqui na main thread (antes era liberado
+        # no worker em thread background — acesso cross-thread a QObject).
+        if hasattr(self, "_loading_members_for"):
+            self._loading_members_for.discard(room_name)
+
         if self.controller.state.active_tab != room_name:
             return
 
@@ -1077,6 +1133,17 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_connection_status_changed(self, status: str):
         self.status_bar.showMessage(f"Status da Conexão: {status}")
+
+    @Slot(str, str)
+    def _on_error_dialog(self, title: str, message: str):
+        """
+        BUG2-FIX: mostra erro em QMessageBox modal em vez de status bar.
+
+        Antes: erros como "Já existe uma sala com este nome" apareciam só na
+        status bar (canto inferior), onde o usuário podia não perceber. Agora
+        abre um dialog modal que bloqueia até o usuário clicar OK.
+        """
+        QMessageBox.warning(self, title, message)
 
     def _create_status_icon(self, color_hex: str) -> QIcon:
         """
@@ -1385,20 +1452,12 @@ class MainWindow(QMainWindow):
         #11: Captura eventos de mouse/teclado em qualquer widget para
         atualizar o timestamp de última atividade. Não consome o evento
         (retorna False para propagar).
+
+        BUG3-FIX: este método não é mais instalado globalmente no QApplication
+        (foi substituído por _check_activity_polling via QTimer). Mantido aqui
+        para compatibilidade caso seja instalado localmente em widgets específicos
+        no futuro — mas por enquanto não é chamado.
         """
-        if event.type() in (
-            QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
-            QEvent.MouseMove, QEvent.Wheel,
-            QEvent.KeyPress, QEvent.KeyRelease,
-        ):
-            self._last_activity_ts = time.time()
-            # Se estava em auto-away, volta para online
-            if self._auto_away_active:
-                self._auto_away_active = False
-                try:
-                    run_in_background(lambda: self.controller.change_status("online"))
-                except Exception:
-                    pass
         return False  # não consome o evento
 
     def _check_idle(self):
@@ -1533,12 +1592,36 @@ class MainWindow(QMainWindow):
             self._my_rooms_loaded_signal_obj = _SignalHolder()
             self._my_rooms_loaded_signal_obj.rooms_loaded.connect(self._on_my_rooms_loaded)
 
-        # Diálogo modal "carregando"
+        # Diálogo modal "carregando" — não-bloqueante via flag de "fechamento
+        # pendente". O diálogo é aberto com exec() APENAS se a operação em
+        # background ainda não terminou. Para evitar chamar accept() de
+        # thread errada (BUG CRÍTICO: "QObject::installEventFilter(): Cannot
+        # filter events for objects in a different thread" + UI trava),
+        # usamos uma conexão queued do signal para fechar o diálogo na main
+        # thread quando o worker terminar.
         loading_dlg = QDialog(self)
         loading_dlg.setWindowTitle("Minhas Salas Criadas")
         loading_dlg.setModal(True)
         loading_v = QVBoxLayout(loading_dlg)
         loading_v.addWidget(QLabel("Carregando suas salas..."))
+
+        # Marca para evitar fechar duas vezes (signal pode disparar depois
+        # do usuário já ter fechado manualmente).
+        self._my_rooms_loading_dlg = loading_dlg
+
+        # Slot connected via queued connection (signal foi conectado no
+        # __init__ do holder). Aqui só garantimos o encerramento do diálogo
+        # modal quando o signal chegar.
+        def _close_loading(owned_rooms):
+            try:
+                if self._my_rooms_loading_dlg is loading_dlg:
+                    loading_dlg.accept()
+                    self._my_rooms_loading_dlg = None
+            except Exception:
+                pass
+
+        # Conecta uma única vez para esta chamada (desconecta depois)
+        self._my_rooms_loaded_signal_obj.rooms_loaded.connect(_close_loading)
 
         def worker():
             owned = []
@@ -1553,12 +1636,22 @@ class MainWindow(QMainWindow):
                             break
                 except Exception as e:
                     logger.warning(f"Erro ao carregar membros de {room_name}: {e}")
-            # Marshalling thread-safe para a UI thread
-            self._my_rooms_loaded_signal_obj.rooms_loaded.emit(owned)
-            loading_dlg.accept()
+            # Marshalling thread-safe para a UI thread — SOMENTE o signal
+            # é emitido da worker thread. O accept() do diálogo acontece
+            # na main thread via _close_loading (queued connection).
+            try:
+                self._my_rooms_loaded_signal_obj.rooms_loaded.emit(owned)
+            except RuntimeError:
+                # Signal já foi destruído se a MainWindow fechou — ignora.
+                pass
 
         run_in_background(worker)
         loading_dlg.exec()
+        # Após fechar (seja por accept ou reject), desconecta o slot temporário
+        try:
+            self._my_rooms_loaded_signal_obj.rooms_loaded.disconnect(_close_loading)
+        except (TypeError, RuntimeError):
+            pass
 
     @Slot(list)
     def _on_my_rooms_loaded(self, owned_rooms: list):
@@ -1938,21 +2031,42 @@ class MainWindow(QMainWindow):
         self._upload_attachment(tab_name, filePath, filename, mime_type)
 
     def _upload_attachment(self, tab_name, file_path, filename, mime_type):
+        """
+        S1-FIX: agora usa streaming para upload (não carrega arquivo inteiro na RAM).
+
+        Antes: with open(file_path, "rb") as f: file_bytes = f.read() — para um
+        arquivo de 10MB, consumia 10MB de RAM. Para 50 usuários enviando
+        simultaneamente, 500MB. Agora usa upload_attachment_streaming que passa
+        o file-like object para o httpx, que faz streaming automático.
+
+        Ainda precisamos ler o arquivo para o cache de preview de imagens (quando
+        for imagem), mas só fazemos isto após o upload bem-sucedido e apenas
+        para imagens (não para PDFs, zips, etc).
+        """
         def worker():
             try:
-                with open(file_path, "rb") as f:
-                    file_bytes = f.read()
-                
                 token = self.controller.state.token
-                res = self.controller.service.api.upload_attachment(token, filename, file_bytes, mime_type)
-                
+                # S1-FIX: streaming em vez de f.read()
+                res = self.controller.service.api.upload_attachment_streaming(
+                    token, file_path, filename, mime_type,
+                )
+
                 att_id = res["id"]
-                self.controller.state.attachment_cache[att_id] = (file_bytes, mime_type)
-                
+
+                # S1-FIX: só carrega no cache se for imagem (para preview inline).
+                # Outros tipos de arquivo não precisam ficar na RAM.
+                if mime_type and mime_type.startswith("image/"):
+                    try:
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                        self.controller.state.attachment_cache[att_id] = (file_bytes, mime_type)
+                    except Exception as e:
+                        logger.warning(f"Falha ao cachear imagem para preview: {e}")
+
                 self.attachment_uploaded_signal.emit(tab_name, att_id, filename)
             except Exception as e:
                 self.upload_error_signal.emit(tab_name, str(e))
-        
+
         run_in_background(worker)
 
     @Slot(str, str, str)
@@ -2035,26 +2149,67 @@ class MainWindow(QMainWindow):
             logger.warning(f"Link bloqueado por esquema não permitido: {url.toString()}")
 
     def _download_attachment_to_file(self, attachment_id, filename):
+        """
+        S3-FIX: agora usa streaming com barra de progresso.
+
+        Antes: carregava arquivo inteiro na RAM (download_attachment retorna
+        bytes). Agora usa download_attachment_streaming que escreve em chunks
+        no disco e reporta progresso via callback.
+        """
         save_path, _ = QFileDialog.getSaveFileName(self, "Salvar Anexo", filename)
         if not save_path:
             return
 
-        self.status_bar.showMessage(f"Baixando {filename}...")
-        
+        # S3-FIX: cria QProgressDialog modal não-bloqueante
+        from PySide6.QtWidgets import QProgressDialog
+        progress = QProgressDialog(f"Baixando {filename}...", "Cancelar", 0, 100, self)
+        progress.setWindowTitle("Download")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(500)  # só mostra se demorar > 500ms
+        progress.setAutoClose(True)
+        progress.setAutoReset(True)
+        progress.setValue(0)
+
+        # Sinal para atualizar progresso na main thread (thread-safe)
+        from PySide6.QtCore import Signal as _Signal
+        # Reutilizamos um signal dinâmico — criamos um QObject temporário
+        from PySide6.QtCore import QObject
+        class _ProgressBridge(QObject):
+            update = _Signal(int, str)
+        bridge = _ProgressBridge()
+        bridge.update.connect(
+            lambda pct, msg: (
+                progress.setValue(pct),
+                progress.setLabelText(msg),
+            )
+        )
+
         def worker():
             try:
                 token = self.controller.state.token
-                if attachment_id in self.controller.state.attachment_cache:
-                    file_bytes, _ = self.controller.state.attachment_cache[attachment_id]
-                else:
-                    file_bytes = self.controller.service.api.download_attachment(token, attachment_id)
-                
-                with open(save_path, "wb") as f:
-                    f.write(file_bytes)
-                self.download_status_signal.emit(f"Download de {filename} concluído!")
+
+                # S3-FIX: callback de progresso — chamado a cada chunk
+                def on_progress(downloaded, total):
+                    if total > 0:
+                        pct = int((downloaded / total) * 100)
+                        size_mb = downloaded / (1024 * 1024)
+                        total_mb = total / (1024 * 1024)
+                        bridge.update.emit(pct, f"Baixando {filename}... {size_mb:.1f}/{total_mb:.1f} MB")
+                    else:
+                        # Sem Content-Length — mostra bytes baixados
+                        size_mb = downloaded / (1024 * 1024)
+                        bridge.update.emit(0, f"Baixando {filename}... {size_mb:.1f} MB")
+
+                # S3-FIX: streaming com callback
+                total_bytes = self.controller.service.api.download_attachment_streaming(
+                    token, attachment_id, save_path, progress_callback=on_progress,
+                )
+                bridge.update.emit(100, f"Download de {filename} concluído!")
+                self.download_status_signal.emit(f"Download de {filename} concluído! ({total_bytes} bytes)")
             except Exception as e:
+                bridge.update.emit(0, f"Erro: {e}")
                 self.download_status_signal.emit(f"Erro ao baixar {filename}: {e}")
-        
+
         run_in_background(worker)
 
     def _download_image_background(self, tab_name, attachment_id, filename, mime_type):

@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 import uuid
-from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 TEST_ADV_DB = "test_advanced_rooms.db"

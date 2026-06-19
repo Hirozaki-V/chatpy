@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 import uuid
-from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 TEST_EXP_DB = "test_explore.db"
@@ -12,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.main import app
 from server.database.connection import init_db, SessionLocal
-from server.database.models import Base, User, Room, RoomMember
+from server.database.models import Base, User, RoomMember
 from server.auth.security import create_access_token, hash_password
 
 class TestExploreRooms(unittest.TestCase):
@@ -86,7 +85,7 @@ class TestExploreRooms(unittest.TestCase):
             headers=headers1
         )
         self.assertEqual(res_create2.status_code, 201)
-        room2_id = res_create2.json()["id"]
+        res_create2.json()["id"]
         
         # 2. explore_user2 ingressa na sala pública
         res_join = self.client.post(f"/api/rooms/{room1_id}/join", json={}, headers=headers2)

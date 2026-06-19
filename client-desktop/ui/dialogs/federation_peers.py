@@ -12,10 +12,9 @@ Acessível via menu SALAS → Federação... (ou similar).
 """
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QWidget, QFormLayout,
-    QLineEdit, QComboBox, QMessageBox, QInputDialog,
+    QListWidget, QListWidgetItem, QMessageBox, QInputDialog,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 
 from utils.async_helper import run_in_background
 
@@ -25,6 +24,8 @@ class FederationPeersDialog(QDialog):
 
     peers_loaded_signal = Signal(list)
     error_signal = Signal(str)
+    peer_discovered_signal = Signal(dict)
+    peer_registered_signal = Signal(str)
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -37,6 +38,8 @@ class FederationPeersDialog(QDialog):
 
         self.peers_loaded_signal.connect(self._on_peers_loaded)
         self.error_signal.connect(self._on_error)
+        self.peer_discovered_signal.connect(self._on_peer_discovered)
+        self.peer_registered_signal.connect(self._on_peer_registered)
 
         self._setup_ui()
         self._load_peers()
@@ -180,7 +183,15 @@ class FederationPeersDialog(QDialog):
         self._do_register(domain, base_url, trust_level=trust)
 
     def _discover_peer(self):
-        """Descobre peer via .well-known/chatpy.json."""
+        """Descobre peer via .well-known/chatpy.json.
+
+        CORREÇÃO CRÍTICA: antes, o worker chamava QMessageBox.information()
+        diretamente — operação de QWidget a partir da thread do QThreadPool.
+        Isso dispara "QObject::installEventFilter(): Cannot filter events
+        for objects in a different thread" e pode travar a UI. Agora
+        emitimos signal (marshalling thread-safe) e o QMessageBox é mostrado
+        na main thread.
+        """
         domain, ok = QInputDialog.getText(
             self, "Descobrir Peer",
             "Domínio do peer para descobrir (ex: chatpy.outro.com):",
@@ -189,23 +200,44 @@ class FederationPeersDialog(QDialog):
             return
         domain = domain.strip()
 
-        self.statusBar().showMessage(f"Descobrindo {domain}...") if hasattr(self, 'statusBar') else None
+        # Feedback visual no título do diálogo (QDialog não tem statusBar)
+        self.setWindowTitle(f"Federação — descobrindo {domain}...")
+        self.discover_btn.setEnabled(False)
+        self.discover_btn.setText("DESCOBRINDO...")
 
         def worker():
             try:
                 token = self.controller.state.token
                 result = self.controller.service.api.discover_federation_peer(token, domain)
-                QMessageBox.information(
-                    self, "Peer Descoberto",
-                    f"Peer {result.get('domain', domain)} cadastrado com sucesso!\n"
-                    f"URL base: {result.get('base_url', '?')}\n"
-                    f"Trust level: {result.get('trust_level', '?')}",
-                )
-                self._load_peers()
+                self.peer_discovered_signal.emit(result or {"domain": domain})
             except Exception as e:
                 self.error_signal.emit(str(e))
 
         run_in_background(worker)
+
+    @Slot(dict)
+    def _on_peer_discovered(self, result: dict):
+        """Slot chamado na main thread quando a descoberta de peer termina."""
+        self.setWindowTitle("Federação — Servidores Peer")
+        self.discover_btn.setEnabled(True)
+        self.discover_btn.setText("DESCOBRIR VIA .WELL-KNOWN")
+        domain = result.get("domain", "?")
+        base_url = result.get("base_url", "?")
+        trust = result.get("trust_level", "?")
+        QMessageBox.information(
+            self, "Peer Descoberto",
+            f"Peer {domain} cadastrado com sucesso!\n"
+            f"URL base: {base_url}\n"
+            f"Trust level: {trust}",
+        )
+        self._load_peers()
+
+    @Slot(str)
+    def _on_peer_registered(self, msg: str):
+        """Slot chamado na main thread após registro manual de peer."""
+        if msg:
+            QMessageBox.information(self, "Peer Adicionado", msg)
+        self._load_peers()
 
     def _do_register(self, domain: str, base_url: str, trust_level: str = "verified"):
         """Executa o registro do peer em background."""
@@ -215,7 +247,9 @@ class FederationPeersDialog(QDialog):
                 self.controller.service.api.register_federation_peer(
                     token, domain, base_url, trust_level=trust_level,
                 )
-                self._load_peers()
+                self.peer_registered_signal.emit(
+                    f"Peer {domain} cadastrado com sucesso!"
+                )
             except Exception as e:
                 self.error_signal.emit(str(e))
 

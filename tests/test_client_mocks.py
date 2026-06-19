@@ -11,10 +11,8 @@ Não exige PySide6 nem servidor real — pode rodar em CI headless.
 """
 import os
 import sys
-import json
 import unittest
 from unittest.mock import MagicMock, patch
-from typing import Dict, Any
 
 # Configura path
 TEST_MOCKS_DB = "test_client_mocks.db"
@@ -92,7 +90,7 @@ class TestHistoryCache(unittest.TestCase):
         from models.state import save_history_cache, get_history_cache_path
         save_history_cache("", {"#geral": [{"sender": "a", "content": "b", "timestamp": "x"}]})
         # Não deve ter criado arquivo (path seria history_cache_.json)
-        path = get_history_cache_path("")
+        get_history_cache_path("")
         # Como username vazio retorna "default", na verdade cria
         # Mas a função retorna cedo se not username
         # Vamos verificar que não lança exceção
@@ -116,7 +114,7 @@ class TestApiClientWithMocks(unittest.TestCase):
         import httpx
         from shared.client.api import ApiClient
 
-        transport = httpx.MockTransport(handler)
+        httpx.MockTransport(handler)
         client = ApiClient("http://testserver")
         # Substitui o cliente HTTP interno por um com mock transport
         # ApiClient usa httpx.get/post diretamente, então precisamos mockar

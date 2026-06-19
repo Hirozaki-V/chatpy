@@ -16,13 +16,10 @@ Uso:
   - Prometheus scrape: add target http://chatpy-server:5000/metrics
   - Grafana: importar dashboard ou construir queries PromQL
 """
-import time
-from typing import Optional
 
 try:
     from prometheus_client import (
         Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
-        CollectorRegistry, REGISTRY,
     )
     PROMETHEUS_AVAILABLE = True
 except ImportError:

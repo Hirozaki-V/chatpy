@@ -13,7 +13,6 @@ import unittest
 import asyncio
 import json
 from datetime import datetime, timezone
-from uuid import uuid4
 
 TEST_DB = "test_q_fixes.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
@@ -112,7 +111,6 @@ class TestWebSocketClientPongResponse(unittest.TestCase):
         """Ao receber {"event": "ping"}, cliente envia {"event": "pong"}."""
         async def run():
             from shared.client.websocket import WebSocketClient
-            from shared.events import EventType
 
             ws = WebSocketClient("ws://localhost:5000/ws")
 

@@ -1,10 +1,10 @@
 import uuid
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
-from server.database.models import User, Friendship
+from server.database.models import User
 from server.api.dependencies import get_current_user
 from server.users.service import (
     enviar_solicitacao_amizade,

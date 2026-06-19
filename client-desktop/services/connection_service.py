@@ -81,6 +81,17 @@ class ConnectionService:
     def connect(self, token: str, username: str):
         self.token = token
         self.username = username
+        # SECURITY (auditoria-2026-06): persiste a fila offline do usuário
+        # ANTERIOR antes de setar o novo username. Antes, set_username
+        # imediatamente carregava a fila do NOVO user — se a fila do user
+        # anterior não tivesse sido persistida (ex: crash, kill -9), as
+        # mensagens pendentes do user A podiam ser entregues ao user B
+        # na mesma máquina (cybercafé, biblioteca). Agora garantimos
+        # _persist_queue() antes de trocar de username.
+        try:
+            self.ws._persist_queue()
+        except Exception as e:
+            logger.warning(f"Erro ao persistir fila offline antes de trocar user: {e}")
         # P1-FIX: seta o username no WebSocketClient para que a fila offline
         # seja carregada do arquivo correto e persistida para este usuário.
         self.ws.set_username(username)

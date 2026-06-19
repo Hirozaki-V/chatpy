@@ -7,23 +7,18 @@ from server.auth.security import hash_password, verify_password
 
 class RoomError(Exception):
     """Classe base para erros relacionados a salas."""
-    pass
 
 class RoomNotFoundError(RoomError):
     """Lançada quando a sala não é encontrada."""
-    pass
 
 class AlreadyMemberError(RoomError):
     """Lançada quando o usuário já é membro da sala."""
-    pass
 
 class NotMemberError(RoomError):
     """Lançada quando o usuário não pertence à sala."""
-    pass
 
 class RoomAccessDeniedError(RoomError):
     """Lançada quando o acesso à sala protegida é negado (senha incorreta)."""
-    pass
 
 def criar_sala(db: Session, name: str, is_private: bool, password: Optional[str], creator_id: uuid.UUID, description: Optional[str] = None) -> Room:
     """

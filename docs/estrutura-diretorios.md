@@ -39,15 +39,15 @@ chatpy/
 │   ├── views/
 │   └── main.py
 │
-├── tests/                   # 54 testes pytest
+├── tests/                   # 178 testes pytest
 ├── alembic/                 # Migrations
+├── alembic/versions/        # Migrations versionadas (inicial: b9a9d8e464b3)
 ├── docs/                    # Documentação
-├── scripts/                 # Scripts utilitários
-├── legacy/                  # Código V1 (referência)
+├── scripts/                 # Scripts utilitários (build_desktop.sh)
 ├── .github/workflows/       # CI/CD
 ├── Dockerfile
 ├── docker-compose.yml
-└── requirements*.txt
+└── requirements*.txt        # server, cli, desktop (sem all-requirements)
 ```
 
 Convenções:

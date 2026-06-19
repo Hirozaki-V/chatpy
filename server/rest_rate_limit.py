@@ -20,7 +20,7 @@ import os
 import time
 import threading
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from collections import defaultdict, deque
 
 from fastapi import Request, HTTPException, status

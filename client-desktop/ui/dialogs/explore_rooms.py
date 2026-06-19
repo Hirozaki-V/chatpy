@@ -150,8 +150,46 @@ class ExploreRoomsDialog(QDialog):
                 return
             password = pass_val.strip()
 
-        try:
-            self.controller.join_room(room_name, password)
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Erro ao Entrar", f"Falha ao entrar na sala {room_name}:\n{str(e)}")
+        # CORREÇÃO CRÍTICA (auditoria-2026-06): antes, chamávamos
+        # controller.join_room() DIRETAMENTE na UI thread — esta função
+        # faz 3 chamadas HTTP síncronas (listar salas, entrar, histórico)
+        # e congela a UI por 0.5-10s. Agora fazemos em background e
+        # mostramos feedback no botão enquanto aguarda.
+        self.join_btn.setEnabled(False)
+        self.join_btn.setText("ENTRANDO...")
+
+        # Signal para marcar sucesso/erro na main thread
+        if not hasattr(self, "_join_result_signal"):
+            from PySide6.QtCore import QObject as _QObj
+            class _JoinResultHolder(_QObj):
+                joined = Signal(str)  # room_name
+                failed = Signal(str, str)  # room_name, error_msg
+            self._join_result_holder = _JoinResultHolder()
+            self._join_result_holder.joined.connect(self._on_join_success)
+            self._join_result_holder.failed.connect(self._on_join_failure)
+
+        def worker():
+            try:
+                self.controller.join_room(room_name, password)
+                self._join_result_holder.joined.emit(room_name)
+            except Exception as e:
+                self._join_result_holder.failed.emit(room_name, str(e))
+
+        run_in_background(worker)
+
+    @Slot(str)
+    def _on_join_success(self, room_name: str):
+        """Chamado na main thread após join_room bem-sucedido."""
+        self.join_btn.setEnabled(True)
+        self.join_btn.setText("ENTRAR NA SALA")
+        self.accept()
+
+    @Slot(str, str)
+    def _on_join_failure(self, room_name: str, err_msg: str):
+        """Chamado na main thread após join_room falhar."""
+        self.join_btn.setEnabled(True)
+        self.join_btn.setText("ENTRAR NA SALA")
+        QMessageBox.critical(
+            self, "Erro ao Entrar",
+            f"Falha ao entrar na sala {room_name}:\n{err_msg}",
+        )

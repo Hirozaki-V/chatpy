@@ -1,11 +1,12 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User
 from server.api.dependencies import get_current_user, require_admin
-from server.users.service import obter_perfil, atualizar_status, listar_usuarios_online
+from server.users.service import atualizar_status, listar_usuarios_online
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -96,7 +97,7 @@ def promote_to_admin(
 
     Não permite promover guests (contas efêmeras não devem ter poder admin).
     """
-    target = db.query(User).filter(User.username.ilike(req.username)).first()
+    target = db.query(User).filter(func.lower(User.username) == req.username.lower()).first()
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
     if getattr(target, "is_guest", False):
@@ -116,7 +117,7 @@ def demote_admin(
     current_user: User = Depends(require_admin),
 ):
     """Rebaixa um administrador a usuário comum. Requer admin."""
-    target = db.query(User).filter(User.username.ilike(req.username)).first()
+    target = db.query(User).filter(func.lower(User.username) == req.username.lower()).first()
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
     if str(target.id) == str(current_user.id):

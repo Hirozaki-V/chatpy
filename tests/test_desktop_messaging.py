@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 import uuid
-from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 TEST_MSG_DB = "test_messaging.db"
@@ -12,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from server.main import app
 from server.database.connection import init_db, SessionLocal
-from server.database.models import Base, User, Room, RoomMember
+from server.database.models import Base, User, Room, RoomMember, Session as DbSession, Friendship
 from server.auth.security import create_access_token, hash_password
 from shared.events import EventType
 
@@ -47,9 +46,40 @@ class TestWebSocketMessaging(unittest.TestCase):
         cls.db.add(user_a)
         cls.db.add(user_b)
         cls.db.commit()
-        
+
+        # Cria amizade A <-> B (necessário para o teste de DM — o servidor
+        # rejeita DMs entre não-amigos com error.alert 403 "Acesso negado".
+        # bug pré-existente no teste: o teste assumia que DM funcionava sem
+        # amizade, mas a feature de friend-gate foi adicionada depois.)
+        from datetime import datetime, timezone
+        cls.db.add(Friendship(
+            user_id=cls.user_a_id,
+            friend_id=cls.user_b_id,
+            status="accepted",
+            created_at=datetime.now(timezone.utc),
+        ))
+        cls.db.commit()
+
         cls.token_a = create_access_token({"sub": str(cls.user_a_id), "username": "user_a"})
         cls.token_b = create_access_token({"sub": str(cls.user_b_id), "username": "user_b"})
+        # O WebSocket valida que o token tem uma sessão ativa no banco
+        # (is_session_valid em dispatcher._handle_auth). Sem isto, o WS
+        # rejeita com error.alert 401 "Sessão revogada ou usuário inexistente."
+        # — bug introduzido quando a feature de revogação imediata foi
+        # adicionada. Criamos as DbSessions correspondentes aos tokens.
+        from datetime import datetime, timezone, timedelta
+        for token, user_id in (
+            (cls.token_a, cls.user_a_id),
+            (cls.token_b, cls.user_b_id),
+        ):
+            cls.db.add(DbSession(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                token=token,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                created_at=datetime.now(timezone.utc),
+            ))
+        cls.db.commit()
 
     @classmethod
     def tearDownClass(cls):

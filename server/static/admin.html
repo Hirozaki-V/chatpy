@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ChatPy Admin</title>
+    <!-- SECURITY: CSP estrito para bloquear XSS mesmo se algum campo
+         escapar à sanitização server-side. inline script permitido
+         apenas via 'unsafe-inline' por enquanto (refatorar para
+         arquivo externo em próxima iteração). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none';">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta http-equiv="X-Frame-Options" content="DENY">
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: monospace; }
         body { background: #0a0a0a; color: #e0e0e0; padding: 20px; }
@@ -102,6 +110,19 @@ function headers() {
     return { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 }
 
+// SECURITY: escape HTML para evitar stored XSS vindo de nome de sala,
+// descrição, username, base_url de peer, etc. Qualquer string que vem
+// da API e vai parar em innerHTML DEVE passar por esta função.
+function esc(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 async function api(path) {
     const res = await fetch(`${baseUrl}${path}`, { headers: headers() });
     if (res.status === 401) {
@@ -127,16 +148,19 @@ async function loadHealth() {
         const el = document.getElementById('health');
         el.textContent = JSON.stringify(data, null, 2);
 
-        // KPIs
+        // KPIs — todos os valores vindo da API são escapados
         const kpis = document.getElementById('kpis');
         const comps = data.components || {};
+        const statusCls = data.status === 'healthy' ? '' : 'err';
+        const dbCls = comps.database === 'ok' ? '' : 'err';
+        const rlCls = comps.rate_limiter === 'ok' ? '' : 'err';
         kpis.innerHTML = `
-            <div class="card"><h3>Status</h3><div class="value ${data.status === 'healthy' ? '' : 'err'}">${data.status}</div></div>
-            <div class="card"><h3>Database</h3><div class="value ${comps.database === 'ok' ? '' : 'err'}">${comps.database || '?'}</div></div>
-            <div class="card"><h3>WebSocket</h3><div class="value">${comps.websocket || '?'}</div></div>
-            <div class="card"><h3>Rate Limiter</h3><div class="value ${comps.rate_limiter === 'ok' ? '' : 'err'}">${comps.rate_limiter || '?'}</div></div>
-            <div class="card"><h3>Federação</h3><div class="value">${comps.federation || '?'}</div></div>
-            <div class="card"><h3>Versão</h3><div class="value" style="font-size:20px">${data.version}</div></div>
+            <div class="card"><h3>Status</h3><div class="value ${statusCls}">${esc(data.status)}</div></div>
+            <div class="card"><h3>Database</h3><div class="value ${dbCls}">${esc(comps.database) || '?'}</div></div>
+            <div class="card"><h3>WebSocket</h3><div class="value">${esc(comps.websocket) || '?'}</div></div>
+            <div class="card"><h3>Rate Limiter</h3><div class="value ${rlCls}">${esc(comps.rate_limiter) || '?'}</div></div>
+            <div class="card"><h3>Federação</h3><div class="value">${esc(comps.federation) || '?'}</div></div>
+            <div class="card"><h3>Versão</h3><div class="value" style="font-size:20px">${esc(data.version)}</div></div>
         `;
     } catch (e) {
         console.error(e);
@@ -147,21 +171,21 @@ async function loadUsers() {
     const users = await api('/api/users/online');
     if (!users) return;
     const tbody = document.querySelector('#usersTable tbody');
-    tbody.innerHTML = users.map(u => `<tr><td>${u.username}</td><td><span class="badge ${u.status === 'online' ? 'ok' : 'warn'}">${u.status}</span></td></tr>`).join('');
+    tbody.innerHTML = users.map(u => `<tr><td>${esc(u.username)}</td><td><span class="badge ${u.status === 'online' ? 'ok' : 'warn'}">${esc(u.status)}</span></td></tr>`).join('');
 }
 
 async function loadRooms() {
     const rooms = await api('/api/rooms');
     if (!rooms) return;
     const tbody = document.querySelector('#roomsTable tbody');
-    tbody.innerHTML = rooms.map(r => `<tr><td>${r.name}</td><td>${r.is_private ? 'Privada' : 'Pública'}</td><td>${r.description || ''}</td></tr>`).join('');
+    tbody.innerHTML = rooms.map(r => `<tr><td>${esc(r.name)}</td><td>${r.is_private ? 'Privada' : 'Pública'}</td><td>${esc(r.description)}</td></tr>`).join('');
 }
 
 async function loadPeers() {
     const peers = await api('/api/admin/peers');
     if (!peers) return;
     const tbody = document.querySelector('#peersTable tbody');
-    tbody.innerHTML = peers.map(p => `<tr><td>${p.domain}</td><td>${p.base_url}</td><td>${p.trust_level}</td><td>${p.is_active ? '✅' : '❌'}</td></tr>`).join('') || '<tr><td colspan="4" style="color:#888">Nenhum peer cadastrado</td></tr>';
+    tbody.innerHTML = peers.map(p => `<tr><td>${esc(p.domain)}</td><td>${esc(p.base_url)}</td><td>${esc(p.trust_level)}</td><td>${p.is_active ? '✅' : '❌'}</td></tr>`).join('') || '<tr><td colspan="4" style="color:#888">Nenhum peer cadastrado</td></tr>';
 }
 
 async function loadBackups() {
@@ -176,7 +200,7 @@ async function loadBackups() {
         el.innerHTML = '<p style="color:#888">Nenhum backup ainda.</p>';
         return;
     }
-    el.innerHTML = data.backups.map(b => `<div>${b.filename} — ${b.size_mb} MB — ${new Date(b.created_at).toLocaleString()}</div>`).join('');
+    el.innerHTML = data.backups.map(b => `<div>${esc(b.filename)} — ${esc(b.size_mb)} MB — ${esc(new Date(b.created_at).toLocaleString())}</div>`).join('');
 }
 
 async function triggerBackup() {

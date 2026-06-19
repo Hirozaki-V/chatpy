@@ -40,16 +40,18 @@ import httpx
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from sqlalchemy.orm import Session as SqlalchemySession
-from sqlalchemy import or_
+from sqlalchemy import func
 
 from server.database.models import ServerPeer, User, PrivateMessage
 
 logger = logging.getLogger("chatpy.federation")
 
-# Configuração via env
-_THIS_SERVER_DOMAIN = os.getenv("CHATPY_SERVER_DOMAIN", "")
-_THIS_SERVER_BASE_URL = os.getenv("CHATPY_SERVER_BASE_URL", "")
-_FEDERATION_ENABLED = os.getenv("FEDERATION_ENABLED", "false").lower() == "true"
+# Configuração via env — lida em runtime por is_federation_enabled(),
+# get_server_domain(), get_server_base_url() para permitir override em
+# testes sem precisar recarregar o módulo.
+_THIS_SERVER_DOMAIN = os.getenv("CHATPY_SERVER_DOMAIN", "")  # legacy
+_THIS_SERVER_BASE_URL = os.getenv("CHATPY_SERVER_BASE_URL", "")  # legacy
+_FEDERATION_ENABLED = os.getenv("FEDERATION_ENABLED", "false").lower() == "true"  # legacy
 
 # P0-FIX: a chave Ed25519 da federação agora é persistida em arquivo
 # (.chatpy_federation_key.pem no diretório de dados). Antes, era regenerada
@@ -135,18 +137,26 @@ except ImportError:
 
 
 def is_federation_enabled() -> bool:
-    """Verifica se a federação está ativada via env."""
-    return _FEDERATION_ENABLED
+    """Verifica se a federação está ativada via env.
+
+    P0-FIX: antes liaamos _FEDERATION_ENABLED em import-time, o que
+    quebrava testes que setam FEDERATION_ENABLED=true depois do
+    primeiro import (outros módulos que importam server.federation
+    cacheiam o valor inicial). Agora lemos a env var em cada chamada
+    para permitir override em runtime (útil em testes e em ops
+    toggle on/off sem restart).
+    """
+    return os.getenv("FEDERATION_ENABLED", "false").lower() == "true"
 
 
 def get_server_domain() -> str:
     """Domínio deste servidor (para anunciar em .well-known)."""
-    return _THIS_SERVER_DOMAIN
+    return os.getenv("CHATPY_SERVER_DOMAIN", "")
 
 
 def get_server_base_url() -> str:
     """URL base deste servidor."""
-    return _THIS_SERVER_BASE_URL
+    return os.getenv("CHATPY_SERVER_BASE_URL", "")
 
 
 def get_public_key_pem() -> Optional[str]:
@@ -162,8 +172,8 @@ def get_well_known_info() -> dict:
     servidor para descobrir a URL base, chave pública e capacidades.
     """
     return {
-        "server_domain": _THIS_SERVER_DOMAIN,
-        "base_url": _THIS_SERVER_BASE_URL,
+        "server_domain": get_server_domain(),
+        "base_url": get_server_base_url(),
         "public_key": _PUBLIC_KEY_PEM,
         "version": "2.0.1",
         "capabilities": [
@@ -212,7 +222,6 @@ def sign_payload(payload: dict) -> Optional[str]:
     if _PRIVATE_KEY is None:
         return None
     try:
-        from cryptography.hazmat.primitives import serialization
         import base64
         payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = _PRIVATE_KEY.sign(payload_bytes)
@@ -245,12 +254,12 @@ def forward_dm_to_peer(
     signature = sign_payload(payload)
     if signature:
         payload["signature"] = signature
-        payload["signer_domain"] = _THIS_SERVER_DOMAIN
+        payload["signer_domain"] = get_server_domain()
 
     headers = {"Content-Type": "application/json"}
     if signature:
         headers["X-ChatPy-Signature"] = signature
-        headers["X-ChatPy-Signer-Domain"] = _THIS_SERVER_DOMAIN
+        headers["X-ChatPy-Signer-Domain"] = get_server_domain()
 
     url = f"{peer.base_url.rstrip('/')}/api/federation/dm"
     try:
@@ -354,11 +363,11 @@ async def receive_federated_dm(
     P0-FIX: persiste `federated_sender` como string "@user@domain" em vez
     de setar sender_id=receiver.id (que corrompia o sentido da FK).
     """
-    if not _FEDERATION_ENABLED:
+    if not is_federation_enabled():
         return False, "Federação desabilitada neste servidor"
 
     # Valida destinatário existe localmente
-    receiver = db.query(User).filter(User.username.ilike(receiver_username)).first()
+    receiver = db.query(User).filter(func.lower(User.username) == receiver_username.lower()).first()
     if not receiver:
         return False, f"Destinatário '{receiver_username}' não existe neste servidor"
 
@@ -510,7 +519,7 @@ def forward_presence_to_peers(
 
     Não bloqueia — se um peer não responde, ignora silenciosamente.
     """
-    if not _FEDERATION_ENABLED:
+    if not is_federation_enabled():
         return
 
     peers = db.query(ServerPeer).filter(
@@ -518,7 +527,7 @@ def forward_presence_to_peers(
         ServerPeer.trust_level != "blocked",
     ).all()
 
-    this_domain = _THIS_SERVER_DOMAIN or "localhost"
+    this_domain = get_server_domain() or "localhost"
     payload = {
         "username": username,
         "domain": this_domain,
@@ -569,7 +578,7 @@ async def receive_federated_presence(
     P0-FIX: agora é async e usa await direto no ConnectionManager (antes
     usava asyncio.ensure_future que nunca esperava a entrega).
     """
-    if not _FEDERATION_ENABLED:
+    if not is_federation_enabled():
         return False, "Federação desabilitada"
 
     open_federation = os.getenv("FEDERATION_OPEN", "false").lower() == "true"
