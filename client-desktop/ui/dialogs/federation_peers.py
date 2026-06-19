@@ -15,8 +15,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QWidget, QFormLayout,
     QLineEdit, QComboBox, QMessageBox, QInputDialog,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QSize
+from PySide6.QtCore import Qt, Signal, QSize
 
 from utils.async_helper import run_in_background
 

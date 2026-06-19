@@ -1,18 +1,71 @@
 # Fluxo de Mensagens
 
-## Cenário 1: Mensagem em Sala Pública
-1. **Ação no Cliente**: O usuário digita na janela GUI (PySide) ou CLI e pressiona Enter.
-2. **Envio da Origem**: O serviço do cliente empacota a string num JSON: `{"event": "message.send_room", "payload": {"room_id": "id", "content": "Oi!"}}` e transmite no WebSocket.
-3. **Recepção no Servidor**: O roteador de WebSockets captura o evento e delega para o módulo `rooms`.
-4. **Validação e Permissões**: O servidor verifica se o remetente associado a este socket tem permissão (membro ativo) para postar na sala em questão.
-5. **Persistência**: A mensagem é armazenada no banco na tabela `messages`.
-6. **Broadcast (Multiplexing)**: O módulo `websocket/` mapeia todos os sockets ativos atualmente logados que pertencem a esta sala, formatando o payload de envio.
-7. **Entrega e Renderização**: O servidor dispara o `message.receive` de volta. Os clientes recebem, extraem a aba correta e renderizam a linha no histórico.
+## Mensagem de sala (pública)
 
-## Cenário 2: Mensagem Privada (DM)
-1. **Ação no Cliente**: O usuário decide enviar uma mensagem direta para um amigo.
-2. **Envio da Origem**: O cliente dispara o evento correspondente: `{"event": "message.send_private", "payload": {"receiver_id": "id", "content": "Segredo"}}`.
-3. **Validação**: O módulo `users/` confere se o alvo existe e (se aplicável na regra de negócios) se a amizade/DM é válida.
-4. **Persistência**: A mensagem é salva na tabela `private_messages`.
-5. **Direcionamento Específico**: O servidor busca em sua hash local os objetos de socket ligados ao ID do remetente e ao ID do destinatário.
-6. **Entrega Segura**: O evento `message.receive` é transmitido unicamente por essas duas vias, garantindo isolamento total de outras conexões ativas do servidor.
+```
+Usuário A digita mensagem →
+  Cliente envia WS: message.send_room {room_id, content} →
+    Servidor valida: é membro? não está banido? conteúdo válido? →
+      Servidor persiste no banco (messages) →
+        Servidor busca membros da sala →
+          Servidor envia WS: message.receive {sender, content, timestamp} para todos os membros
+```
+
+## Mensagem privada (DM)
+
+```
+Usuário A digita DM →
+  Cliente envia WS: message.send_private {receiver_id, content} →
+    Servidor valida: são amigos? não há bloqueio? →
+      Servidor persiste no banco (private_messages) →
+        Servidor envia WS: message.receive para o remetente E o destinatário
+```
+
+## Mensagem federada (cross-server)
+
+```
+Usuário A (servidor X) manda DM para @bob@servidor-y →
+  Cliente envia WS: message.send_federated {receiver_username: "@bob@y", content} →
+    Servidor X parseia: user=bob, domain=y →
+      Servidor X busca peer "y" na tabela server_peers →
+        Servidor X assina payload com Ed25519 →
+          Servidor X envia HTTP POST para https://y/api/federation/dm →
+            Servidor Y valida assinatura →
+              Servidor Y persiste DM →
+                Servidor Y entrega via WS ao Bob (se online) →
+                  Servidor Y responde 200 OK →
+                    Servidor X confirma ao remetente A via WS
+```
+
+## Presença
+
+```
+Usuário entra (WS auth.success) →
+  Servidor marca user.status = "online" no banco →
+    Servidor broadcast WS: user.presence {user_id, status: "online"} para todos os conectados
+
+Usuário sai (WS disconnect) →
+  Servidor marca user.status = "offline" →
+    Servidor broadcast WS: user.presence {user_id, status: "offline"}
+```
+
+## Indicador "digitando..."
+
+```
+Usuário A digita →
+  Cliente faz debounce de 2s →
+    Cliente envia WS: user.typing {room_id ou receiver_id} →
+      Servidor retransmite WS: user.typing_broadcast {username} para membros/destinatário →
+        Cliente B mostra "A está digitando..." na status bar por 4s
+```
+
+## Bots
+
+```
+Usuário digita "!ping" numa sala →
+  Servidor processa message.send_room normalmente →
+    Após broadcast, servidor verifica se mensagem começa com "!" →
+      Servidor passa para bots registrados →
+        Bot processa comando e retorna resposta →
+          Servidor envia resposta como message.receive para a sala
+```

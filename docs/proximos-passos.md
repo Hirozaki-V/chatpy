@@ -1,33 +1,79 @@
-# Próximos Passos: Ordem Sugerida de Implementação
+# Próximos Passos
 
-Com a definição mestra documentada através dos arquivos markdown desta pasta, encerra-se a fase de Arquitetura. A implementação oficial (desenvolvimento de código) deve obedecer o pipeline lógico de dependências descritas abaixo:
+## Para usuários
 
-### Passo 1: Construção Básica da Árvore
-- Criar a estrutura base de diretórios (`server/`, `client-desktop/`, `client-cli/`, `shared/`).
-- Instalar dependências bases virtuais e criar o boilerplate do `shared/` com modelos Pydantic e enums básicos.
+Se você quer **usar** o ChatPy:
 
-### Passo 2: O Banco de Dados e Autenticação (`server/`)
-- Levantar o ORM assíncrono conectado com SQLite na camada `server/database/`.
-- Construir a mecânica da API REST de autenticação (`server/auth/`) com `Argon2` e emissão de `JWT`.
-- Validação: Testar esses endpoints via requests puros (ex: curl).
+1. **Suba um servidor** — siga [INSTALAÇÃO-RAPIDA.md](../INSTALACAO-RAPIDA.md)
+2. **Instale o cliente** — Desktop ou CLI
+3. **Convide amigos** — compartilhe o IP ou use [Tailscale](guia-tailscale.md)
+4. **Administre** — acesse `http://servidor:5000/admin`
 
-### Passo 3: Coração do WebSocket (`server/websocket/`)
-- Mapear o servidor WebSocket.
-- Integrar a validação de token aos novos WebSockets recebidos.
-- Implementar o padrão "Echo" inicial ou chat em sala genérica para testar conectividade bidirecional base.
+## Para desenvolvedores
 
-### Passo 4: O Cliente CLI de Validação Rápida (`client-cli/`)
-- Criar a interface de terminal usando `Rich/Typer`.
-- Essa escolha prioriza testar o ciclo completo do JSON WebSocket e autenticação antes de se comprometer com componentes densos de GUI.
+Se você quer **contribuir** ou **estender** o ChatPy:
 
-### Passo 5: Escalando Regras de Negócio de Salas (`server/rooms/`)
-- Escrever os controladores lógicos reais de gerenciar múltiplos canais, salas protegidas, listas de membros e o isolamento de eventos de broadcasting de maneira correta no server.
+1. Leia [CONTRIBUTING.md](../CONTRIBUTING.md) — setup de desenvolvimento
+2. Leia [ARCHITECTURE.md](../ARCHITECTURE.md) — como o código funciona
+3. Leia [docs/protocolo.md](protocolo.md) — protocolo REST e WebSocket
 
-### Passo 6: O Cliente GUI Definitivo (`client-desktop/`)
-- Levantar o ciclo de vida do `PySide6`.
-- Mapear a UX e as sub-rotinas (Signal/Slots) integradas com a thread de chamadas WebSocket não-bloqueantes.
-- Polimento estético, inserção de temas Dark/Light nativos.
+### Criar um bot
 
-### Passo 7: Empacotamento
-- Redigir os `Dockerfiles` nativos do backend.
-- Lançar os testes oficiais focados na resiliência das conexões concorrentes.
+```python
+from server.bots import ChatPyBot, bot_command
+
+class MeuBot(ChatPyBot):
+    name = "meubot"
+    description = "Meu bot customizado"
+
+    @bot_command("hora", help="Mostra a hora atual")
+    async def handle_hora(self, args, context):
+        from datetime import datetime
+        return f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+
+# Registrar no startup do servidor
+from server.bots import register_bot
+register_bot(MeuBot())
+```
+
+Na sala, digite `!hora` e o bot responde.
+
+### Criar um tema customizado
+
+```json
+{
+    "name": "Meu Tema",
+    "author": "voce",
+    "version": "1.0",
+    "colors": {
+        "bg_main": "#1a1a2e",
+        "text_main": "#e0e0e0",
+        "accent_color": "#e94560",
+        ...
+    }
+}
+```
+
+Salve como `.chatpy-theme` e importe com `/theme import arquivo.chatpy-theme`.
+
+### Federar com outro servidor
+
+1. No servidor A, cadastre o servidor B como peer:
+   ```
+   POST /api/admin/peers
+   {"domain": "chatpy.outro.com", "base_url": "https://chatpy.outro.com"}
+   ```
+2. No servidor B, faça o mesmo com o servidor A
+3. Usuários podem mandar DMs federadas: `/fmsg @user@chatpy.outro.com olá!`
+
+## Para quem quer privacidade real
+
+O E2E encryption está parcialmente implementado (scaffold). Para usar:
+1. Cliente gera par Ed25519 (Identity Key)
+2. Publica via `PUT /api/keys/identity`
+3. Gera pool de One-Time PreKeys e publica via `POST /api/keys/prekeys`
+4. Para iniciar DM E2E, busca chaves do destinatário via `GET /api/keys/{username}`
+5. Executa X3DH localmente para derivar chave compartilhada
+6. Implementa Double Ratchet para cifrar mensagens
+
+O passo 6 (Double Ratchet) ainda não está implementado — é a próxima grande feature.

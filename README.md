@@ -1,107 +1,83 @@
 # ChatPy V2 💬🐍
 
-O **ChatPy V2** é um ecossistema completo de comunicação auto-hospedável (self-hosted) inspirado na simplicidade do MSN Messenger, na filosofia textual do IRC/WeeChat e na estética terminal cibernética. 
+Um chat retrô, leve e auto-hospedável. Estilo IRC/WeeChat com features modernas.
 
-O projeto foi totalmente reconstruído do zero, adotando uma arquitetura **API-First** moderna e assíncrona, composta por um servidor central robusto e dois clientes oficiais (gráfico e terminal) que se comunicam sob o mesmo protocolo de rede JSON via WebSockets.
+## O que é?
 
----
+ChatPy é um chat que **você hospeda** — no seu PC, num Raspberry Pi, num servidor na nuvem. Funciona online ou offline (na sua rede local). Sem depender de Discord, Slack ou qualquer serviço de terceiros.
 
-## 🏛️ Arquitetura do Projeto
+**Características principais:**
+- 🔒 **Seguro**: senhas com Argon2, sessões JWT revogáveis, anti brute-force
+- 📟 **Retrô**: visual terminal cibernético, estilo IRC clássico
+- ⚡ **Leve**: roda em Raspberry Pi com ~50MB de RAM (SQLite, sem dependências externas)
+- 🕵️ **Anônimo**: modo convidado — entra e fala sem cadastro
+- 🔗 **Federável**: conecta múltiplos servidores ChatPy entre si
+- 🖥️ **Dois clientes**: Desktop (PySide6) e CLI (terminal)
 
-O ChatPy V2 é dividido de forma estrita em componentes independentes:
-
-* **`server/`**: Servidor assíncrono construído sobre **FastAPI** e **Uvicorn**, utilizando **SQLAlchemy** para persistência no banco de dados. Gerencia sessões JWT, rate limit e dispatching de eventos em tempo real no WebSocket.
-* **`shared/`**: Contratos de validação (via **Pydantic**), enums de eventos (`shared/events`) e modelos comuns (`shared/types`) consumidos tanto pelo servidor quanto pelos clientes. Conta também com wrappers de conexão reutilizáveis (`shared/client`).
-* **`client-desktop/`**: Interface gráfica nativa de alta performance construída com **PySide6 (Qt)**. Adota um visual retrô escuro limpo, sem cantos arredondados, estruturado em abas e com suporte a notificações desktop do sistema.
-* **`client-cli/`**: Interface de linha de comando baseada em **Typer** e **Rich**, oferecendo painéis WeeChat-style em tempo real e captura não-bloqueante de teclado.
-
----
-
-## 🚀 Como Executar o Servidor (Docker Compose)
-
-O deploy do servidor é otimizado para ser realizado em segundos em qualquer máquina (incluindo **Raspberry Pi 3B/4/5** e servidores domésticos) usando Docker.
-
-> [!IMPORTANT]
-> **Configuração Obrigatória de Segurança (`JWT_SECRET`)**:
-> O servidor do ChatPy V2 exige a definição da variável de ambiente `JWT_SECRET` para a assinatura e validação segura dos tokens JWT. Caso essa variável não esteja definida no ambiente, a inicialização falhará.
->
-> Você pode definí-la temporariamente no terminal antes de rodar os comandos:
-> ```bash
-> export JWT_SECRET="sua-chave-secreta-super-segura"
-> ```
-> Ou criando um arquivo `.env` no diretório raiz do projeto com o conteúdo:
-> ```env
-> JWT_SECRET="sua-chave-secreta-super-segura"
-> ```
-
-### 1. Inicialização Padrão (Leve com SQLite)
-Por padrão, o servidor rodará de forma extremamente leve usando SQLite (configurado em modo WAL de alta concorrência) gravado em um volume docker:
+## Início rápido (3 comandos)
 
 ```bash
+# 1. Clone o repositório
+git clone https://github.com/your-org/chatpy.git
+cd chatpy
+
+# 2. Configure o segredo JWT
+echo 'JWT_SECRET=minha-chave-super-secreta-aleatoria-12345678' > .env
+
+# 3. Suba o servidor
 docker compose up -d
 ```
-*O servidor estará escutando requisições em `http://localhost:5000` e conexões WebSocket em `ws://localhost:5000/ws`.*
 
-### 2. Inicialização com Banco de Dados Postgres e Cache Redis
-Para cenários de alta disponibilidade e escalabilidade, você pode ativar os serviços de suporte via Perfis do Docker Compose:
+Servidor rodando em `http://localhost:5000`. Pronto!
 
-```bash
-# Sobe o servidor juntamente com Postgres e Redis
-docker compose --profile database --profile cache up -d
-```
+## Usar o chat
 
-### 3. Parando a Infraestrutura
-Para parar e remover todos os containers iniciados:
-```bash
-docker compose down
-```
-
----
-
-## 🖥️ Como Executar os Clientes
-
-### Instalação de Dependências
-Certifique-se de instalar as dependências de runtime antes de rodar os clientes locais:
+### Cliente Desktop (gráfico)
 ```bash
 pip install -r requirements.txt
-```
-*(Além de `PySide6`, `typer` e `rich`, certifique-se de ter `httpx` e `websockets` instalados).*
-
----
-
-### 🟢 1. Cliente Desktop (PySide6)
-Inicie a interface de usuário gráfica rodando:
-
-```bash
 python client-desktop/main.py
 ```
 
-* **Login/Registro**: Na primeira janela, preencha o endereço do servidor (padrão: `127.0.0.1:5000`), apelido e senha. Clique em "ENTRAR" (ou "CADASTRAR" caso seja seu primeiro acesso).
-* **Navegação**: Use duplo clique em usuários online ou contatos para iniciar DMs e clique duas vezes nos canais para alternar abas de chat.
-
----
-
-### 📟 2. Cliente de Terminal (CLI)
-Inicie a interface clássica IRC no terminal rodando:
-
+### Cliente CLI (terminal)
 ```bash
+pip install -r requirements-cli.txt
 python client-cli/main.py --host 127.0.0.1 --port 5000
 ```
 
-* **Comandos Úteis**:
-  * `/join #canal` - Entrar em uma sala pública.
-  * `/leave` - Sair da aba/sala ativa.
-  * `/dm username mensagem` - Enviar DM direta para um usuário.
-  * `/status away` - Mudar presença para ausente.
-  * `TAB` - Alternar rapidamente entre as abas ativas.
-  * `/help` - Ver a lista de comandos completa.
+### Painel admin (browser)
+Abra `http://localhost:5000/admin` no navegador. Faça login com sua conta.
 
----
+## Comandos básicos (CLI)
 
-## 📚 Documentação Adicional
+| Comando | O que faz |
+|---|---|
+| `/help` | Lista todos os comandos |
+| `/join #sala` | Entra numa sala |
+| `/dm usuario mensagem` | Envia mensagem privada |
+| `/create #nova` | Cria uma sala |
+| `/status away` | Muda seu status |
+| `/quit` | Sai do chat |
 
-Para guias de deploy avançados e arquitetura, leia:
-* 📖 [Estratégia de Deploy](docs/deploy.md)
-* 📖 [Guia de Hospedagem no Raspberry Pi](docs/guia-raspberry-pi.md)
-* 📖 [Guia de VPN e Acesso Remoto com Tailscale](docs/guia-tailscale.md)
-* 📖 [Especificação do Protocolo V1](docs/protocolo.md)
+## Documentação
+
+- [Instalação rápida](INSTALACAO-RAPIDA.md) — passo a passo detalhado
+- [Como contribuir](CONTRIBUTING.md) — guia para desenvolvedores
+- [Arquitetura](ARCHITECTURE.md) — como o projeto funciona por dentro
+- [Deploy em produção](docs/deploy.md) — Docker, VPS, Raspberry Pi
+- [Federação](docs/protocolo.md) — conectando servidores
+- [Migração para Postgres](docs/guia-postgres.md) — escalando além do SQLite
+
+## Stack tecnológica
+
+| Camada | Tecnologia |
+|---|---|
+| Servidor | FastAPI + Uvicorn + SQLAlchemy + WebSocket |
+| Banco | SQLite (default) ou PostgreSQL |
+| Cliente Desktop | PySide6 (Qt) |
+| Cliente CLI | Typer + Rich |
+| Protocolo | JSON via WebSocket, validado com Pydantic |
+| Container | Docker + Docker Compose |
+
+## Licença
+
+MIT — use livremente.

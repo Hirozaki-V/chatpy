@@ -14,10 +14,9 @@ from typing import Dict, Optional, List, Any
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QTabWidget, QTextBrowser,
-    QLineEdit, QTextEdit, QPushButton, QLabel, QComboBox, QDialog,
-    QFormLayout, QInputDialog, QStyle, QSystemTrayIcon,
-    QMessageBox, QStatusBar, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QScrollArea, QGridLayout,
+    QPushButton, QLabel, QComboBox, QDialog,
+    QInputDialog, QStyle, QSystemTrayIcon,
+    QMessageBox, QStatusBar,
     QFileDialog, QFrame, QTabBar, QApplication, QMenu
 )
 from PySide6.QtCore import Qt, Slot, Signal, QUrl, QSize, QObject, QTimer, QEvent

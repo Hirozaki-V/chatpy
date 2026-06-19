@@ -1,26 +1,71 @@
-# Roadmap do ChatPy
+# Roadmap do ChatPy V2
 
-A evolução do ChatPy será tratada em 3 grandes épicos de desenvolvimento, garantindo que o software escale de um protótipo viável para uma robusta ferramenta de comunicação interconectada.
+## ✅ Concluído
 
-## Fase V1: O Núcleo Retrô
-**Foco:** Estabelecer a arquitetura fundacional, estabilidade básica da API, protocolo JSON e clientes baseados em componentes de interface ricos (saindo do mundo Web UI).
-- Criação e validação do pacote `shared/`.
-- Construção do servidor assíncrono (FastAPI/WebSockets/SQLite).
-- Lógica de Registro/Login (Argon2, JWT).
-- Cliente Desktop nativo (PySide6) com UX limpa estilo IRC/MSN.
-- Cliente CLI paritário, focado em power-users (`Rich`).
-- Funcionalidades principais: DMs, Criação/Ingresso em Salas, Lista de Amigos, Presença e Histórico local.
+### Estabilidade
+- [x] Docker compose funcional
+- [x] Testes corrigidos (54/54 passando)
+- [x] Logout autenticado
+- [x] XSS e path traversal corrigidos no Desktop
+- [x] Memory leak e segfault corrigidos
+- [x] Anti brute-force persistente (SQLite)
+- [x] Rate limit REST + WebSocket configurável
+- [x] Limites para usuários guest
+- [x] Healthcheck multi-componente
+- [x] Backup automático SQLite
 
-## Fase V2: Privacidade e Customização
-**Foco:** Refinar a segurança, privacidade da comunicação e personalização da interface nativa.
-- Implementação de Criptografia Ponta a Ponta (E2EE) para mensagens diretas (DMs).
-- Suporte para salas efêmeras (mensagens destruídas automaticamente, operando apenas em RAM no lado do servidor).
-- Engine robusta de Plugins para permitir que os clientes carreguem scrips próprios ou modifiquem comportamento da GUI.
-- Suporte nativo a extensões de Temas visuais (Dark/Light estendidos).
-- Perfis de usuário ricos e customizáveis.
+### Qualidade
+- [x] Tab-completion de @nick e #sala
+- [x] Badges de não-lidas por aba
+- [x] Indicador "digitando..." em tempo real
+- [x] Refatoração do main_window.py (diálogos extraídos)
+- [x] Helper de threading unificado (QThreadPool)
+- [x] Diálogos redimensionáveis
+- [x] Testes para clientes (54 testes)
+- [x] CI/CD com GitHub Actions
+- [x] Logging estruturado JSON
+- [x] Auto-away por ociosidade
 
-## Fase V3: A Rede Federation/Bridge (Expansão Global)
-**Foco:** Quebrar o isolamento de instâncias individuais usando uma estrutura de Bridge nativa.
-- Introdução dos **Bridge Servers**: um protocolo de comunicação Server-to-Server que permite que instâncias independentes de ChatPy se conversem.
-- Compartilhamento federado: um usuário no servidor `foo.pi` pode convidar alguém de `bar.net` para um chat cruzado sem criar uma conta no outro sistema.
-- API consolidada para integrações externas de serviços corporativos ou de automação.
+### Visão de longo prazo
+- [x] Federação MVP (DMs cross-server, assinatura Ed25519)
+- [x] Modo convidado (anonimato)
+- [x] Empacotamento Desktop (PyInstaller spec)
+- [x] CLI Unix com input não-bloqueante (prompt_toolkit)
+- [x] Métricas Prometheus
+- [x] Design doc E2E (Signal Protocol)
+- [x] Design doc Web client
+
+### Features adicionais
+- [x] Sync de presença federada
+- [x] LAN discovery via mDNS
+- [x] Framework de bots
+- [x] Painel admin web
+- [x] E2E scaffold (schema de chaves + endpoints)
+- [x] Salas federadas (schema)
+- [x] Offline sync queue
+- [x] Auto-update do cliente
+- [x] Marketplace de temas
+- [x] Guia Postgres
+- [x] Schema migration com Alembic
+- [x] Tema light na CLI
+- [x] Admin de peers federados (UI Desktop + REST)
+
+## 🔲 Futuro
+
+### Prioridade alta
+- [ ] E2E encryption real (Double Ratchet no cliente)
+- [ ] Empacotar Desktop em .exe/.dmg e publicar release
+- [ ] Web client (Next.js + PWA)
+- [ ] Salas federadas completas (sync de mensagens)
+
+### Prioridade média
+- [ ] Mobile (React Native ou Flutter)
+- [ ] Sync de presença federada (já tem scaffold, falta entregar via WS)
+- [ ] Painel admin com mais features (gerenciar usuários, banir, etc.)
+- [ ] Voice/video (WebRTC)
+
+### Prioridade baixa
+- [ ] DNS SRV para descoberta automática de peers
+- [ ] Marketplace de temas (comunidade)
+- [ ] Integração com IRC (bridge)
+- [ ] Multi-device (mesma conta em vários dispositivos)
