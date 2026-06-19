@@ -23,9 +23,16 @@ Para registrar um bot no servidor:
 Bots escutam mensagens via WebSocket dispatcher — quando uma mensagem
 chega numa sala onde o bot é membro, o bot processa comandos que
 começam com ! (ex: !previsao São Paulo).
+
+P0-FIX: cada bot agora tem um UUID fixo derivado do seu nome (via UUID v5
+no namespace ChatPy). Antes, o dispatcher setava sender_id=user_id (o
+UUID de quem invocou o bot) no payload WS da resposta do bot — isto
+confundia clientes que mostravam a mensagem do bot como se fosse do
+usuário que invocou. Agora cada bot tem identidade própria.
 """
 import logging
 import re
+import uuid
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
 
@@ -33,6 +40,17 @@ logger = logging.getLogger("chatpy.bots")
 
 # Registry global de bots
 _registered_bots: List["ChatPyBot"] = []
+
+# Namespace fixo para gerar UUIDs determinísticos por nome de bot (UUID v5)
+# Isto garante que o "echobot" tenha sempre o mesmo UUID em todas as
+# instâncias do servidor — clientes podem confiar que mensagens com
+# sender_id=uuid(echobot) são sempre do bot, nunca de um usuário.
+_CHATPY_BOT_NAMESPACE = uuid.UUID("a4c4b3a2-1d8b-4d2e-9c1f-7e5b6a3c2d10")
+
+
+def bot_uuid_for_name(name: str) -> uuid.UUID:
+    """Deriva um UUID determinístico a partir do nome do bot."""
+    return uuid.uuid5(_CHATPY_BOT_NAMESPACE, name.lower())
 
 
 @dataclass
@@ -60,6 +78,11 @@ class ChatPyBot:
     name: str = "bot"
     description: str = "Bot sem descrição"
     command_prefix: str = "!"  # padrão IRC: !comando
+
+    @property
+    def uuid(self) -> uuid.UUID:
+        """UUID determinístico derivado do nome do bot."""
+        return bot_uuid_for_name(self.name)
 
     def get_commands(self) -> Dict[str, Callable]:
         """Retorna dict {comando: handler} dos comandos registrados."""
@@ -138,7 +161,10 @@ def _is_async(func):
 def register_bot(bot: ChatPyBot):
     """Registra um bot no servidor."""
     _registered_bots.append(bot)
-    logger.info("Bot registrado: %s (%d comandos)", bot.name, len(bot.get_commands()))
+    logger.info(
+        "Bot registrado: %s (UUID=%s, %d comandos)",
+        bot.name, bot.uuid, len(bot.get_commands()),
+    )
 
 
 def get_registered_bots() -> List[ChatPyBot]:
@@ -146,17 +172,20 @@ def get_registered_bots() -> List[ChatPyBot]:
     return list(_registered_bots)
 
 
-async def process_bots(content: str, context: BotContext) -> List[str]:
+async def process_bots(content: str, context: BotContext) -> List[tuple]:
     """
     Processa uma mensagem através de todos os bots registrados.
-    Retorna lista de respostas (uma por bot que respondeu).
+
+    P0-FIX: retorna lista de tuplas (bot, response) em vez de strings
+    formatadas — o dispatcher usa bot.uuid e bot.name para montar o
+    payload WS com sender_id e sender_name corretos.
     """
     responses = []
     for bot in _registered_bots:
         try:
             response = await bot.on_message(content, context)
             if response:
-                responses.append(f"[🤖 {bot.name}] {response}")
+                responses.append((bot, response))
         except Exception as e:
             logger.error("Erro no bot %s: %s", bot.name, e)
     return responses

@@ -29,6 +29,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Diretório de uploads (default: /app/uploads)
       - UPLOAD_DIR=${UPLOAD_DIR:-/app/uploads}
+      # P1-FIX: diretório base para arquivos persistentes (JWT secret, chave
+      # de federação, cache). DEVE apontar para um volume mapeado — caso
+      # contrário, container efêmero perde o secret e invalida todas as
+      # sessões JWT a cada restart.
+      - CHATPY_DATA_DIR=/app/data
     volumes:
       - chatpy-data:/app/data
       - chatpy-uploads:/app/uploads

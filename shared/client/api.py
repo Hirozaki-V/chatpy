@@ -97,9 +97,21 @@ class ApiClient:
             return False
         return res.status_code == 200
 
-    def get_room_history(self, token: str, room_id: str, limit: int = 40, offset: int = 0) -> List[Dict[str, Any]]:
-        """Retorna o histórico paginado de mensagens de uma sala."""
-        url = f"{self.base_url}/api/rooms/{room_id}/history?limit={limit}&offset={offset}"
+    def get_room_history(
+        self, token: str, room_id: str, limit: int = 40, offset: int = 0,
+        before_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retorna o histórico paginado de mensagens de uma sala.
+
+        P1-FIX: suporta cursor pagination via before_id. Quando fornecido,
+        retorna mensagens com ID estritamente menor que before_id — estável
+        mesmo se novas mensagens chegam enquanto o usuário rola o histórico.
+        """
+        params = f"limit={limit}&offset={offset}"
+        if before_id:
+            params += f"&before_id={before_id}"
+        url = f"{self.base_url}/api/rooms/{room_id}/history?{params}"
         try:
             res = httpx.get(url, headers=self._headers(token), timeout=self._timeout)
         except httpx.RequestError as e:
@@ -307,6 +319,49 @@ class ApiClient:
             return res.json()
         raise ValueError(self._safe_json(res, "Erro ao fazer upload do arquivo."))
 
+    def upload_attachment_streaming(
+        self, token: str, file_path: str, filename: Optional[str] = None, mime_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        T4-FIX: upload de anexo via streaming (não carrega arquivo inteiro na RAM).
+
+        Antes, upload_attachment() exigia file_bytes: bytes — o cliente lia o
+        arquivo inteiro na memória antes de enviar. Para 50 usuários enviando
+        imagens de 10MB simultaneamente, isto consumia 500MB de RAM só no
+        cliente. Agora usamos streaming: o arquivo é lido em chunks durante
+        o envio HTTP.
+
+        Args:
+            token: JWT do usuário
+            file_path: caminho do arquivo no disco
+            filename: nome exibido (default: basename do file_path)
+            mime_type: MIME type (default: detectado via mimetypes)
+
+        Returns:
+            Resposta JSON do servidor (id, filename, file_size, mime_type, url)
+        """
+        import os
+        import mimetypes
+        url = f"{self.base_url}/api/attachments/upload"
+        if filename is None:
+            filename = os.path.basename(file_path)
+        if mime_type is None:
+            mime_type, _ = mimetypes.guess_type(file_path)
+            mime_type = mime_type or "application/octet-stream"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            # httpx suporta file-like objects em files= — ele faz streaming
+            # automático sem carregar o arquivo inteiro na RAM.
+            with open(file_path, "rb") as f:
+                files = {"file": (filename, f, mime_type)}
+                res = httpx.post(url, files=files, headers=headers, timeout=_UPLOAD_TIMEOUT)
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão no upload: {e}")
+        if res.status_code == 201:
+            return res.json()
+        raise ValueError(self._safe_json(res, "Erro ao fazer upload do arquivo."))
+
     def download_attachment(self, token: str, attachment_id: str) -> bytes:
         """Faz o download do anexo em bytes."""
         url = f"{self.base_url}/api/attachments/{attachment_id}/download"
@@ -317,6 +372,47 @@ class ApiClient:
         if res.status_code == 200:
             return res.content
         raise ValueError(self._safe_json(res, "Erro ao fazer download do anexo."))
+
+    def download_attachment_streaming(
+        self, token: str, attachment_id: str, save_path: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> int:
+        """
+        T4-FIX: download de anexo via streaming (não carrega arquivo inteiro na RAM).
+
+        Antes, download_attachment() retornava bytes — o cliente lia a
+        resposta HTTP inteira na memória. Para um anexo de 10MB, consumia
+        10MB de RAM. Agora escrevemos direto no disco em chunks de 1MB.
+
+        Args:
+            token: JWT do usuário
+            attachment_id: UUID do anexo
+            save_path: caminho onde salvar o arquivo
+            chunk_size: tamanho do chunk em bytes (default 1MB)
+
+        Returns:
+            Número de bytes baixados.
+
+        Raises:
+            ValueError: se houver erro de conexão ou status não-200.
+        """
+        url = f"{self.base_url}/api/attachments/{attachment_id}/download"
+        headers = self._headers(token)
+        total_bytes = 0
+        try:
+            # stream=True faz o httpx não carregar a resposta inteira na RAM
+            with httpx.stream("GET", url, headers=headers, timeout=_UPLOAD_TIMEOUT) as res:
+                if res.status_code != 200:
+                    # Lê o corpo do erro (pequeno) para extrair detail
+                    error_body = res.read().decode("utf-8", errors="replace")
+                    raise ValueError(f"Erro {res.status_code} no download: {error_body[:200]}")
+                with open(save_path, "wb") as f:
+                    for chunk in res.iter_bytes(chunk_size=chunk_size):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão no download: {e}")
+        return total_bytes
 
     def explore_rooms(self, token: str) -> List[Dict[str, Any]]:
         """Retorna a lista de todas as salas disponíveis para exploração."""
@@ -348,6 +444,70 @@ class ApiClient:
         except httpx.RequestError:
             pass
         return {}
+
+    # -----------------------------------------------------------------------
+    # P0-FIX: Conta de convidado (guest) — modo anônimo efêmero.
+    # -----------------------------------------------------------------------
+    def create_guest_account(self) -> str:
+        """
+        P0-FIX: cria uma conta de convidado (guest) no servidor.
+        Retorna o token JWT imediatamente — sem cadastro, sem senha, sem email.
+        Útil para usuários que querem testar o servidor sem se comprometer.
+        Conta expira em GUEST_TTL_HOURS (default 24h).
+        """
+        url = f"{self.base_url}/api/auth/guest"
+        try:
+            res = httpx.post(url, timeout=self._timeout)
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+        if res.status_code == 201:
+            return res.json()["token"]
+        raise ValueError(self._safe_json(res, "Erro ao criar conta de convidado."))
+
+    # -----------------------------------------------------------------------
+    # P0-FIX: Perfil do usuário logado — usado por /whoami na CLI.
+    # -----------------------------------------------------------------------
+    def get_me(self, token: str) -> Dict[str, Any]:
+        """Retorna o perfil do usuário autenticado atual."""
+        url = f"{self.base_url}/api/users/me"
+        try:
+            res = httpx.get(url, headers=self._headers(token), timeout=self._timeout)
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+        if res.status_code == 200:
+            return res.json()
+        raise ValueError(self._safe_json(res, "Erro ao obter perfil."))
+
+    # -----------------------------------------------------------------------
+    # P0-FIX: Administração de usuários (promover/demover admin)
+    # -----------------------------------------------------------------------
+    def promote_to_admin(self, token: str, username: str) -> Dict[str, Any]:
+        """Promove um usuário a administrador. Requer privilégios de admin."""
+        url = f"{self.base_url}/api/users/admin/promote"
+        try:
+            res = httpx.post(
+                url, json={"username": username},
+                headers=self._headers(token), timeout=self._timeout,
+            )
+            if res.status_code == 200:
+                return res.json()
+            raise ValueError(self._safe_json(res, "Erro ao promover usuário."))
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+
+    def demote_admin(self, token: str, username: str) -> Dict[str, Any]:
+        """Rebaixa um administrador a usuário comum. Requer privilégios de admin."""
+        url = f"{self.base_url}/api/users/admin/demote"
+        try:
+            res = httpx.post(
+                url, json={"username": username},
+                headers=self._headers(token), timeout=self._timeout,
+            )
+            if res.status_code == 200:
+                return res.json()
+            raise ValueError(self._safe_json(res, "Erro ao rebaixar usuário."))
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
 
     # -----------------------------------------------------------------------
     # #9: Administração de peers federados

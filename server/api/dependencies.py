@@ -69,3 +69,25 @@ def get_current_user(
         )
 
     return user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """
+    P0-FIX: Dependência que exige que o usuário autenticado seja admin.
+
+    Usada para proteger endpoints /api/admin/* (peers federados, backups,
+    futuras ações administrativas). Antes, qualquer usuário autenticado
+    podia cadastrar peers maliciosos, deletar todos os peers, ou forçar
+    backups — risco grave de segurança e DoS.
+
+    Para tornar um usuário admin:
+      - Via setup.py: o primeiro usuário criado é marcado como admin
+      - Via SQL: UPDATE users SET is_admin = 1 WHERE username = 'admin'
+      - Via CLI futura: chatpy-admin promote <username>
+    """
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado. Esta operação requer privilégios de administrador.",
+        )
+    return current_user

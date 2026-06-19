@@ -1,168 +1,183 @@
 # Instalação Rápida — ChatPy V2
 
-Este guia mostra como colocar o ChatPy funcionando em **menos de 5 minutos**.
+Coloque o ChatPy funcionando em **menos de 2 minutos**. Sem complicação.
 
 ---
 
 ## Pré-requisitos
 
 Você precisa de **um** destes:
-- **Docker** instalado (recomendado — mais fácil)
-- **Python 3.10+** instalado (alternativa sem Docker)
+- **Python 3.10+** instalado (mais fácil — recomendado para iniciantes)
+- **Docker** instalado (alternativa)
+
+> 💡 Não sabe se tem Python? Abra o terminal e digite `python --version` (Windows) ou `python3 --version` (Linux/Mac). Se aparecer uma versão 3.10 ou maior, você já tem!
 
 ---
 
-## Opção 1: Com Docker (recomendado)
+## Opção 1: Windows (zero terminal — mais fácil)
 
-### Passo 1: Baixar o projeto
+1. Baixe o projeto (zip ou `git clone`)
+2. Entre na pasta do projeto
+3. **Duplo clique em `iniciar.bat`**
 
+O script faz tudo automaticamente:
+- Verifica se Python está instalado
+- Instala as dependências
+- Gera a chave de segurança (JWT_SECRET) automaticamente
+- Cria o banco de dados
+- Inicia o servidor
+
+Quando aparecer no terminal:
+```
+  URL:    http://localhost:5000
+  Admin:  http://localhost:5000/admin
+```
+
+...está pronto! Abra o navegador em `http://localhost:5000/admin` e crie sua conta.
+
+---
+
+## Opção 2: Linux / Mac (um comando)
+
+1. Baixe o projeto:
 ```bash
 git clone https://github.com/your-org/chatpy.git
 cd chatpy
 ```
 
-### Passo 2: Configurar o segredo
-
-Crie um arquivo `.env` na pasta do projeto:
-
+2. Execute o launcher:
 ```bash
-# Linux/Mac
-echo 'JWT_SECRET=escolha-uma-chave-aleatoria-bem-longa-aqui' > .env
-
-# Windows (PowerShell)
-echo "JWT_SECRET=escolha-uma-chave-aleatoria-bem-longa-aqui" > .env
+./iniciar.sh
 ```
 
-> ⚠️ **Importante:** a chave precisa ter no mínimo 16 caracteres. Use letras, números e símbolos misturados. Não use a do exemplo — gere a sua!
+O script faz tudo: instala dependências, gera a chave de segurança, cria o banco, inicia o servidor.
 
-### Passo 3: Subir o servidor
+---
+
+## Opção 3: Setup interativo (qualquer sistema)
+
+Se quiser mais controle, use o configurador interativo:
 
 ```bash
+python setup.py
+```
+
+O wizard pergunta:
+- Qual IP e porta usar
+- Se quer criar um usuário administrador agora
+- Inicia o servidor no final
+
+---
+
+## Opção 4: Docker (para quem já tem Docker)
+
+```bash
+git clone https://github.com/your-org/chatpy.git
+cd chatpy
 docker compose up -d
 ```
 
-Pronto! O servidor está rodando em `http://localhost:5000`.
+A chave de segurança (JWT_SECRET) é **auto-gerada** na primeira execução — não precisa criar `.env` manualmente.
 
-### Passo 4: Verificar que está funcionando
+---
 
-Abra no navegador: `http://localhost:5000/health`
+## Não precisa configurar JWT_SECRET!
 
-Deve mostrar algo como:
-```json
-{"status": "healthy", "components": {"database": "ok", "websocket": "ok (0 active)", ...}}
+O ChatPy **auto-gera** a chave de segurança na primeira execução e a salva no arquivo `.chatpy_auto_secret`. Você não precisa fazer nada.
+
+Se quiser definir sua própria chave (recomendado para produção), crie um arquivo `.env`:
+```env
+JWT_SECRET=sua-chave-aleatoria-super-secreta-de-pelo-menos-16-caracteres
 ```
 
-### Passo 5: Instalar o cliente
+Mas para testar em casa, **não precisa** — o servidor simplesmente funciona.
 
-#### Cliente Desktop (interface gráfica)
+---
 
+## Criar sua conta
+
+Depois que o servidor estiver rodando, você tem 3 opções:
+
+### Pelo navegador (mais fácil)
+Abra `http://localhost:5000/admin` → clique em login → "Não tem conta? Cadastre-se"
+
+### Pelo cliente Desktop
 ```bash
 pip install -r requirements.txt
 python client-desktop/main.py
 ```
+Na tela de login, clique em "Não tem conta? Cadastre-se".
 
-Na tela de login:
-1. Servidor: `127.0.0.1:5000`
-2. Clique em "Não tem conta? Cadastre-se"
-3. Escolha um apelido e senha (mínimo 8 caracteres, com letra e número)
-4. Clique em CADASTRAR, depois faça login
-
-#### Cliente CLI (terminal)
-
+### Pelo cliente CLI (terminal)
 ```bash
 pip install -r requirements-cli.txt
 python client-cli/main.py
 ```
-
-Siga o menu: escolha opção 2 (criar conta), depois opção 1 (login).
-
----
-
-## Opção 2: Sem Docker (Python direto)
-
-### Passo 1: Baixar e instalar dependências
-
-```bash
-git clone https://github.com/your-org/chatpy.git
-cd chatpy
-pip install -r requirements.txt
-```
-
-### Passo 2: Configurar
-
-```bash
-export JWT_SECRET=minha-chave-super-secreta-aleatoria-12345678
-```
-
-### Passo 3: Iniciar o servidor
-
-```bash
-uvicorn server.main:app --host 0.0.0.0 --port 5000
-```
-
-### Passo 4: Usar o cliente
-
-Mesmo que a Opção 1, Passo 5.
+Escolha opção 2 (criar conta), depois opção 1 (login).
 
 ---
 
-## Acessar de outros computadores
+## Verificar que está funcionando
 
-Por padrão, o servidor só aceita conexões de `localhost`. Para acessar de outras máquinas na sua rede:
+Abra no navegador: `http://localhost:5000/health`
 
-### No arquivo `.env`, adicione:
-```env
-CORS_ORIGINS=http://localhost,http://127.0.0.1,http://192.168.1.100:5000
+Deve mostrar:
+```json
+{"status": "healthy", "components": {"database": "ok", "websocket": "ok", ...}}
 ```
-(Substitua `192.168.1.100` pelo IP do computador onde o servidor está rodando)
-
-### No cliente, use o IP do servidor:
-- Desktop: campo "Servidor" = `192.168.1.100:5000`
-- CLI: `python client-cli/main.py --host 192.168.1.100 --port 5000`
 
 ---
 
-## Acessar de fora da sua rede (internet)
+## Acessar de outros computadores (na mesma rede)
+
+O ChatPy detecta automaticamente o IP da sua rede e permite conexões da LAN.
+
+No cliente (outra máquina), use o IP do servidor:
+- **Desktop**: campo "Servidor" = `192.168.1.100:5000` (ou clique em 📡 para descobrir automaticamente)
+- **CLI**: `python client-cli/main.py --host 192.168.1.100 --port 5000`
+
+Descubra o IP do servidor com:
+- **Windows**: `ipconfig` no terminal
+- **Linux/Mac**: `hostname -I` ou `ip addr`
+
+---
+
+## Acessar de fora da sua rede (pela internet)
 
 Você precisa de um destes:
-- **Tailscale** ou **WireGuard** (VPN — recomendado, mais seguro) → veja [Guia Tailscale](docs/guia-tailscale.md)
-- **Port forwarding** no roteador + **domínio** + **HTTPS** (Caddy/nginx)
+- **Tailscale** (VPN — recomendado, mais seguro) → veja [Guia Tailscale](docs/guia-tailscale.md)
+- **Port forwarding** no roteador + **HTTPS** (Caddy/nginx) → veja [Deploy](docs/deploy.md)
 
 ---
 
 ## Painel de administração
 
-Abra `http://localhost:5000/admin` no navegador. Faça login com sua conta do ChatPy. Você verá:
+Abra `http://localhost:5000/admin` no navegador. Faça login com sua conta. Você verá:
 - Status do servidor (database, WebSocket, rate limiter, federação)
 - Usuários online
 - Salas cadastradas
 - Peers federados
-- Backups
+- Backups (com botão "Backup Agora")
+- Saúde completa do sistema
 
 ---
 
 ## Modo convidado (sem cadastro)
 
-O ChatPy suporta contas efêmeras — o usuário entra e fala sem precisar se cadastrar:
+Quer que alguém entre no chat sem se cadastrar? Use o modo convidado:
 
 ```bash
-# Criar conta de convidado (retorna token JWT imediatamente)
 curl -X POST http://localhost:5000/api/auth/guest
 ```
 
-A conta expira em 24 horas e é removida automaticamente. Convidados não podem criar salas privadas nem ser administradores.
+Retorna um token JWT imediatamente. A conta expira em 24 horas. Convidados não podem criar salas privadas nem ser administradores.
 
 ---
 
 ## Parar o servidor
 
-```bash
-# Docker
-docker compose down
-
-# Python direto
-Ctrl+C no terminal
-```
+- **Windows/Linux/Mac (terminal)**: pressione `Ctrl+C`
+- **Docker**: `docker compose down`
 
 ---
 
@@ -170,4 +185,6 @@ Ctrl+C no terminal
 
 - [Deploy em produção](docs/deploy.md) — VPS, Raspberry Pi, TLS
 - [Federação](docs/protocolo.md) — conectar múltiplos servidores
-- [Comandos do chat](docs/comandos.md) — lista completa de comandos CLI/Desktop
+- [Guia Raspberry Pi](docs/guia-raspberry-pi.md) — rodar num Pi
+- [Guia Tailscale](docs/guia-tailscale.md) — acesso remoto seguro
+- [Variáveis de ambiente](docs/env-vars.md) — configuração avançada

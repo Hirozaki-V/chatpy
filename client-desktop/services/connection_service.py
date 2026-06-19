@@ -81,6 +81,9 @@ class ConnectionService:
     def connect(self, token: str, username: str):
         self.token = token
         self.username = username
+        # P1-FIX: seta o username no WebSocketClient para que a fila offline
+        # seja carregada do arquivo correto e persistida para este usuário.
+        self.ws.set_username(username)
         self.should_reconnect = True
         self.run_coroutine_async(self._connect_and_auth())
 
@@ -103,10 +106,27 @@ class ConnectionService:
             self._on_ws_disconnect()
 
     def disconnect(self):
+        """
+        P0-FIX: agora espera o WS fechar de verdade (síncrono) em vez de
+        fire-and-forget. Antes, run_coroutine_async(self._disconnect_internal())
+        retornava imediatamente, e se o usuário fizesse login novamente em
+        seguida, o WS antigo ainda podia estar tentando fechar enquanto o
+        novo abria — causava confusão no _auth_token compartilhado.
+        """
         self.should_reconnect = False
         self.token = None
         self.username = None
-        self.run_coroutine_async(self._disconnect_internal())
+        try:
+            # Tenta esperar o disconnect completar (timeout 5s — se falhar,
+            # segue em frente para não travar a UI)
+            self.run_coroutine(self._disconnect_internal())
+        except Exception as e:
+            logger.warning(f"Falha ao aguardar disconnect do WS: {e}")
+            # Fallback: fire-and-forget — melhor que travar
+            try:
+                self.run_coroutine_async(self._disconnect_internal())
+            except Exception:
+                pass
 
     async def _disconnect_internal(self):
         await self.ws.disconnect()
@@ -156,6 +176,12 @@ class ConnectionService:
 
     def logout(self):
         """Revoga a sessão no servidor REST e desconecta WS."""
+        # P1-FIX: persiste fila offline antes de desconectar (caso haja
+        # mensagens enfileiradas que precisam sobreviver ao fechamento)
+        try:
+            self.ws._persist_queue()
+        except Exception as e:
+            logger.warning(f"Erro ao persistir fila offline: {e}")
         if self.token:
             try:
                 self.api.logout(self.token)

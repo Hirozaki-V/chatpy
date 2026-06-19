@@ -75,6 +75,26 @@ class WebSocketDispatcher:
 
         # 4. Global Rate Limiting para usuários autenticados
         if authenticated_user_id:
+            # P1-FIX: atualiza timestamp de última atividade — heartbeat usa
+            # isto para distinguir conexões ativas de zumbis.
+            self.manager.touch(authenticated_user_id)
+
+            # Q5-FIX: responde a ping do cliente com pong e NÃO conta para rate limit.
+            # O heartbeat do servidor envia {"event": "ping"} periodicamente; o
+            # cliente responde com {"event": "pong"}. Aqui consumimos o pong
+            # silenciosamente (o touch() acima já atualizou last_seen_at).
+            if event == EventType.PONG:
+                return authenticated_user_id
+            # Q5-FIX: se o servidor envia ping e o cliente responde pong, o
+            # cliente também pode enviar ping (não deveria, mas por segurança
+            # respondemos pong para manter compatibilidade).
+            if event == EventType.PING:
+                await self.manager.send_personal_message(
+                    {"event": "pong", "payload": {}},
+                    authenticated_user_id,
+                )
+                return authenticated_user_id
+
             username = self.manager.user_names.get(authenticated_user_id)
             if username and self.rate_limiter.record_message_and_check_flood(username):
                 remaining = self.rate_limiter.get_remaining_mute_time(username)
@@ -335,7 +355,11 @@ class WebSocketDispatcher:
         }
         await self.manager.broadcast_to_users(receive_frame, member_ids)
 
-        # #11: Processa bots — se a mensagem começa com !, bots respondem
+        # #11: Processa bots — se a mensagem começa com !, bots respondem.
+        # P0-FIX: cada bot agora tem UUID próprio (determinístico por nome),
+        # e o payload WS inclui sender_id=bot.uuid e sender_name=bot.name.
+        # Antes, sender_id=user_id (UUID de quem invocou) — clientes não
+        # distinguiam a mensagem do bot da mensagem do usuário.
         try:
             from server.bots import process_bots, BotContext, get_registered_bots
             if get_registered_bots():
@@ -346,17 +370,18 @@ class WebSocketDispatcher:
                     is_dm=False,
                 )
                 bot_responses = await process_bots(content, bot_context)
-                for response in bot_responses:
+                for bot, response in bot_responses:
                     bot_frame = {
                         "event": EventType.MESSAGE_RECEIVE.value,
                         "payload": {
                             "id": str(uuid.uuid4()),
                             "room_id": str(payload.room_id),
-                            "sender_id": str(user_id),  # placeholder
-                            "sender_name": "🤖 Bot",
+                            "sender_id": str(bot.uuid),  # P0-FIX: UUID do bot, não do invocador
+                            "sender_name": f"🤖 {bot.name}",  # nome do bot
                             "content": response,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "attachment": None,
+                            "is_bot": True,  # flag explícita para clientes
                         },
                     }
                     await self.manager.broadcast_to_users(bot_frame, member_ids)

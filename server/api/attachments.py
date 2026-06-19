@@ -15,6 +15,7 @@ from shared.allowed_attachments import (
     DEFAULT_MAX_FILE_SIZE,
     get_allowed_extensions_display,
 )
+from shared.magic_numbers import is_safe_attachment
 from pydantic import BaseModel
 
 logger = logging.getLogger("chatpy.attachments")
@@ -116,6 +117,40 @@ def upload_attachment(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Arquivo excede o limite máximo de {limit_mb} MB para usuários {user_type}s.",
+        )
+
+    # P1-FIX: Validação por Magic Numbers (assinatura real dos bytes).
+    # Antes, um atacante podia renomear `malicious.exe` para `cute.png` e o
+    # servidor aceitava — só validávamos extensão + MIME declarado. Agora
+    # lemos os primeiros 512 bytes e comparamos com a tabela de assinaturas
+    # conhecida. Se não bater, rejeitamos. Isto impede upload disfarçado de
+    # executáveis maliciosos como imagens.
+    try:
+        prefix_bytes = file.file.read(512)
+        file.file.seek(0)
+    except Exception as e:
+        logger.warning("Falha ao ler prefixo do arquivo para magic number: %s", e)
+        prefix_bytes = b""
+
+    if prefix_bytes and not is_safe_attachment(prefix_bytes, mime_type):
+        # Registra rejeição para métricas
+        try:
+            from server.metrics import record_attachment_rejection
+            record_attachment_rejection("magic_number_mismatch")
+        except Exception:
+            pass
+        logger.warning(
+            "Anexo rejeitado: magic number não bate com MIME declarado (%s). "
+            "Provável tentativa de disfarçar executável como imagem.",
+            mime_type,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Arquivo rejeitado: o conteúdo do arquivo não corresponde ao tipo "
+                "declarado. Se você está tentando enviar um arquivo legítimo, "
+                "verifique se a extensão corresponde ao conteúdo real."
+            ),
         )
 
     # 4. Salva no disco com nome controlado (UUID — nunca usa o filename original)

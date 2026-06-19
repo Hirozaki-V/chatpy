@@ -79,12 +79,20 @@ def create_chat_layout(
     online_users: List[str],
     current_input: str,
     theme: str = None,
+    typing_indicators: dict = None,
+    typing_ttl_s: float = 4.0,
 ) -> Layout:
     """
     Cria e retorna a estrutura de Layout Rich com estilo WeeChat/IRC clássico.
 
     #16: agora aceita parâmetro `theme` ('dark' ou 'light'). Se None,
     usa o tema salvo em disco (default: dark).
+
+    P0-FIX: aceita `typing_indicators` (dict {tab_name: {username: timestamp}})
+    e `typing_ttl_s` — renderiza "X está digitando..." no rodapé do chat
+    APENAS para usuários ativos nos últimos typing_ttl_s segundos. Antes,
+    estes indicadores eram appendados em state.messages e poluíam o
+    histórico permanentemente.
     """
     if theme is None:
         theme = get_saved_theme()
@@ -120,7 +128,29 @@ def create_chat_layout(
     layout["header"].update(header_text)
 
     # 2. Chat (Histórico de mensagens do canal/DM ativo)
-    chat_content = "\n".join(messages[-100:])
+    # P0-FIX: computa indicadores de digitação ativos para a aba atual
+    # e os prepende ao conteúdo (uma linha só, separada do histórico).
+    import time as _time
+    typing_line = ""
+    if typing_indicators and active_tab in typing_indicators:
+        now = _time.time()
+        active_typers = [
+            u for u, ts in typing_indicators[active_tab].items()
+            if now - ts < typing_ttl_s
+        ]
+        if active_typers:
+            if len(active_typers) == 1:
+                typing_line = f"  ⋯ {active_typers[0]} está digitando..."
+            elif len(active_typers) <= 3:
+                typing_line = f"  ⋯ {', '.join(active_typers)} estão digitando..."
+            else:
+                typing_line = f"  ⋯ {len(active_typers)} pessoas estão digitando..."
+
+    chat_lines = messages[-100:]
+    if typing_line:
+        chat_lines = chat_lines + [typing_line]
+    chat_content = "\n".join(chat_lines)
+
     layout["chat"].update(
         Panel(
             chat_content,

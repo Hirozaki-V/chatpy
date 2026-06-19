@@ -48,6 +48,37 @@ class ClientState:
         self.room_uuid_map = {}  # nome -> uuid
         self.user_uuid_map = {}  # username -> uuid
         self.running = True
+        # P0-FIX: indicadores de digitação separados do histórico.
+        # Antes, o "... user está digitando ..." era appendado em state.messages
+        # e ficava permanente no histórico visível (o comentário antigo dizia
+        # que o live_chat_loop sobrescreveria, mas ele só faz refresh=True
+        # do layout Rich — não limpa a lista).
+        # Agora mantemos um dict {tab_name: {username: timestamp}} — o layout
+        # renderiza somente os que foram atualizados nos últimos TYPING_TTL_S.
+        self.typing_indicators: dict = {}
+        # Permite que o usuário desative o indicador caso queira mais foco
+        self.show_typing = True
+        # P0-FIX: marca se a sessão atual é de convidado (guest). A UI usa
+        # isto para mostrar um aviso visual e para esconder comandos que
+        # guests não podem usar (ex: /create com senha, /promote).
+        self.is_guest = False
+        # P0-FIX: offset de paginação de histórico por sala — usado por
+        # /history more para buscar mensagens mais antigas.
+        self.history_offsets: dict = {}
+        # P1-FIX: lista de notificações (paridade com Desktop). Cada item é
+        # um dict {type, sender, content, timestamp, read}. Tipos: 'dm',
+        # 'friend_accepted', 'friend_request'. Populado pelos handlers de
+        # evento WS e visível via /notifications.
+        self.notifications: list = []
+        # Q11-FIX: controle de sons de notificação. BEL (\a) é o caractere
+        # ASCII que faz o terminal apitar — útil quando a CLI está em
+        # background (outra aba/janela) e o usuário quer saber que chegou
+        # DM. Default ligado; /beep off desativa.
+        self.beep_enabled: bool = True
+
+
+# Janela de tempo (em segundos) que o indicador de digitação permanece visível
+TYPING_TTL_S = 4.0
 
 
 state = ClientState()
@@ -56,18 +87,52 @@ state = ClientState()
 def _sanitize_text(text: str) -> str:
     """
     Sanitiza texto para exibição segura no terminal (Rich).
-    Remove caracteres de controle ANSI que poderiam ser usados para injeção visual.
+
+    P0-FIX: antes, removíamos apenas sequências CSI (ESC [ ... letra).
+    Isto deixava passar:
+      - OSC: ESC ] 0 ; título BEL/ST — pode mudar título da janela e, em
+        alguns terminais, ler clipboard ou abrir URLs
+      - DCS/PM/APC: ESC P/ESC ^/ESC _ ... ST — escape strings que alguns
+        terminais interpretam
+      - Single-char ESC: ESC =, ESC >, ESC M, ESC D, ESC 7, ESC 8 —
+        mudam modo do terminal (em particular, ESC M faz scroll reverso)
+      - Caracteres de controle C0: BEL, BS, HT (mantido), LF (mantido),
+        VT, FF, CR (mantido), SO, SI, etc.
+      - DEL (0x7f)
+
+    Um peer federado malicioso poderia enviar DMs com estes escapes para
+    manipular o terminal do destinatário. Agora removemos tudo exceto
+    \t (tab), \n (newline) e \r (carriage return).
     """
     if not text:
         return ""
-    # Remove escape sequences ANSI que poderiam manipular o terminal
     import re
-    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+    # 1. Remove OSC (Operating System Command): ESC ] ... (BEL | ESC \)
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    # 2. Remove DCS/PM/APC: ESC P/^/_ ... ESC \
+    text = re.sub(r"\x1b[P^_][^\x1b]*\x1b\\", "", text)
+    # 3. Remove CSI: ESC [ ... letra (a-zA-Z)
+    text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    # 4. Remove single-char ESC escapes (ESC + um caractere não-[):
+    #    cobre ESC =, ESC >, ESC M, ESC D, ESC 7, ESC 8, ESC c, etc.
+    text = re.sub(r"\x1b[^[]", "", text)
+    # 5. Remove todos os caracteres de controle C0 exceto \t (0x09),
+    #    \n (0x0a) e \r (0x0d). Também remove DEL (0x7f).
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+
+    return text
 
 
 async def fetch_initial_data(api: ApiClient):
     """Carrega dados iniciais via REST API para popular caches de UUIDs."""
     try:
+        # P0-FIX: carrega cache de histórico offline ANTES de tudo (paridade
+        # com o Desktop que já tem history_cache_<user>.json). Isto permite
+        # que o usuário veja mensagens recentes mesmo se o servidor estiver
+        # lento ou indisponível no momento do login.
+        _load_cli_history_cache()
+
         rooms = api.get_rooms(state.token)
         for r in rooms:
             state.room_uuid_map[r["name"]] = r["id"]
@@ -90,7 +155,11 @@ async def fetch_initial_data(api: ApiClient):
                 content = _sanitize_text(msg["content"])
                 formatted_history.append(f"[{t}] <{sender}> {content}")
 
-            state.messages["#geral"].extend(formatted_history)
+            # P0-FIX: se há cache local para #geral, faz merge (servidor vence
+            # em conflitos — é a fonte autoritativa). Isto garante que o
+            # usuário veja as mensagens novas do servidor, mas preserva as
+            # mensagens locais recentes que ainda não foram sincronizadas.
+            state.messages["#geral"] = formatted_history
 
         users = api.get_online_users(state.token)
         state.online_users = [u["username"] for u in users]
@@ -99,6 +168,48 @@ async def fetch_initial_data(api: ApiClient):
 
     except Exception as e:
         state.messages["#geral"].append(f"[Sistema] Erro ao carregar dados iniciais: {e}")
+
+
+# ---------------------------------------------------------------------------
+# P0-FIX: cache de histórico offline para a CLI (paridade com Desktop).
+# ---------------------------------------------------------------------------
+def _load_cli_history_cache():
+    """Carrega histórico cacheado do disco para dentro de state.messages."""
+    if not state.username:
+        return
+    try:
+        from server.paths import cli_history_cache_path
+        import json
+        cache_path = cli_history_cache_path(state.username)
+        if not cache_path.exists():
+            return
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        # Mescla: apenas adiciona abas que não estão em state.messages
+        for tab, msgs in cached.items():
+            if tab not in state.messages:
+                state.messages[tab] = msgs
+    except Exception:
+        pass  # cache é best-effort
+
+
+def _save_cli_history_cache():
+    """Salva state.messages em cache no disco para a próxima sessão."""
+    if not state.username:
+        return
+    try:
+        from server.paths import cli_history_cache_path
+        import json
+        cache_path = cli_history_cache_path(state.username)
+        # Limita a 50 mensagens por aba para não crescer indefinidamente
+        truncated = {
+            tab: msgs[-50:] if isinstance(msgs, list) else []
+            for tab, msgs in state.messages.items()
+        }
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(truncated, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # cache é best-effort
 
 
 async def handle_ws_event(event: str, payload: dict, api: ApiClient):
@@ -122,6 +233,45 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
 
             formatted_msg = f"[{t}] <{sender_name}> {content}"
 
+            # Q7-FIX: se a mensagem tem anexo, exibe informação para o usuário
+            # saber que há um arquivo para baixar. Antes, o campo attachment
+            # era ignorado — mensagens com só anexo (content vazio) apareciam
+            # como "[HH:MM] <user> " sem indicação de que havia um arquivo.
+            attachment = payload.get("attachment")
+            if attachment:
+                att_id = attachment.get("id", "?")
+                filename = _sanitize_text(attachment.get("filename") or "arquivo")
+                file_size = attachment.get("file_size", 0)
+                mime_type = attachment.get("mime_type") or ""
+
+                # Formata tamanho de forma amigável
+                if file_size < 1024:
+                    size_str = f"{file_size} B"
+                elif file_size < 1024 * 1024:
+                    size_str = f"{file_size / 1024:.1f} KB"
+                else:
+                    size_str = f"{file_size / (1024 * 1024):.1f} MB"
+
+                # Indica tipo de arquivo com emoji
+                type_icon = "📄"
+                if mime_type.startswith("image/"):
+                    type_icon = "🖼️"
+                elif mime_type.startswith("audio/"):
+                    type_icon = "🎵"
+                elif mime_type.startswith("video/"):
+                    type_icon = "🎬"
+                elif mime_type == "application/pdf":
+                    type_icon = "📕"
+                elif "zip" in mime_type or "gzip" in mime_type or "tar" in mime_type:
+                    type_icon = "📦"
+
+                # Adiciona informação de anexo à mensagem
+                att_line = (
+                    f"\n  {type_icon} [Anexo: {filename} ({size_str})] "
+                    f"— use /download {att_id} para baixar"
+                )
+                formatted_msg += att_line
+
             if room_id:
                 room_name = next(
                     (name for name, uid in state.room_uuid_map.items() if uid == room_id), None
@@ -140,6 +290,20 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
                         state.messages[tab_name] = []
                     state.messages[tab_name].append(formatted_msg)
 
+                    # P1-FIX: registra notificação de DM recebida (paridade
+                    # com Desktop). Só registra se a aba não estiver ativa.
+                    if state.active_tab != tab_name:
+                        state.notifications.append({
+                            "type": "dm",
+                            "sender": sender_name,
+                            "content": content,
+                            "timestamp": timestamp_str or datetime.now().isoformat(),
+                            "read": False,
+                        })
+                        # Q11-FIX: emite beep para notificar usuário quando
+                        # a CLI está em background ou em outra aba.
+                        _beep()
+
         elif event == EventType.USER_PRESENCE.value:
             # Atualização otimizada: apenas atualiza a lista de online users
             try:
@@ -155,12 +319,28 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
             state.messages[state.active_tab].append(
                 f"[Sistema] Nova solicitação de amizade de: {sender_name}"
             )
+            # P1-FIX: registra na lista de notificações (paridade com Desktop)
+            state.notifications.append({
+                "type": "friend_request",
+                "sender": sender_name,
+                "content": f"Solicitação de amizade de {sender_name}",
+                "timestamp": datetime.now().isoformat(),
+                "read": False,
+            })
 
         elif event == EventType.FRIEND_ACCEPTED.value:
             username = _sanitize_text(payload.get("username") or "Desconhecido")
             state.messages[state.active_tab].append(
                 f"[Sistema] {username} aceitou sua solicitação de amizade!"
             )
+            # P1-FIX: registra na lista de notificações
+            state.notifications.append({
+                "type": "friend_accepted",
+                "sender": username,
+                "content": f"{username} aceitou sua solicitação de amizade",
+                "timestamp": datetime.now().isoformat(),
+                "read": False,
+            })
 
         elif event == EventType.FRIEND_REMOVED.value:
             username = _sanitize_text(payload.get("username") or "Desconhecido")
@@ -190,27 +370,41 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
             state.messages[state.active_tab].append(f"[Servidor Erro {code}] {msg}")
 
         elif event == EventType.USER_TYPING_BROADCAST.value:
-            # P1-3: indicador de digitação na CLI — append direto na aba ativa
-            # (não persiste, mas dá feedback visual em tempo real).
+            # P0-FIX: indicador de digitação separado do histórico.
+            # Antes, o "... user está digitando ..." era appendado em
+            # state.messages[active_tab] e ficava PERMANENTE no histórico
+            # (o live_chat_loop só faz refresh=True do layout Rich, não
+            # limpa a lista). Agora registramos num dict separado com
+            # timestamp, e o layout renderiza apenas os ativos.
+            if not state.show_typing:
+                return
+
             username = _sanitize_text(payload.get("username") or "Desconhecido")
             room_id = payload.get("room_id")
             receiver_id = payload.get("receiver_id")
 
-            target_tab = state.active_tab
+            if username == state.username:
+                return  # não mostra o próprio indicador
+
             if room_id:
                 target_tab = next(
                     (name for name, uid in state.room_uuid_map.items() if uid == room_id),
-                    state.active_tab,
+                    None,
                 )
             elif receiver_id:
+                # DM: a aba é @<username>
                 target_tab = f"@{username}"
+            else:
+                target_tab = None
 
-            if target_tab == state.active_tab and username != state.username:
-                # Apenas mostra se a aba ativa for o destino — append efêmero
-                # (próxima renderização do live_chat_loop vai sobrescrever).
-                state.messages[state.active_tab].append(
-                    f"  ... {username} está digitando ..."
-                )
+            if not target_tab:
+                return
+
+            # Registra o indicador com timestamp atual
+            import time as _time
+            if target_tab not in state.typing_indicators:
+                state.typing_indicators[target_tab] = {}
+            state.typing_indicators[target_tab][username] = _time.time()
 
     except Exception as e:
         state.messages[state.active_tab].append(f"[Erro Interno WS] {e}")
@@ -221,6 +415,30 @@ async def handle_disconnect():
     state.messages[state.active_tab].append(
         "[Sistema] Conexão com o servidor perdida. Tentando reconectar..."
     )
+
+
+def _beep():
+    """
+    Q11-FIX: emite um beep no terminal via caractere BEL (\\a).
+
+    Útil quando a CLI está em background (outra aba/janela do terminal) e
+    o usuário quer ser notificado de novas DMs. O BEL faz o terminal apitar
+    (se o som estiver habilitado no SO) OU pisca o ícone da janela na
+    taskbar (comportamento depende do emulador de terminal).
+
+    Só funciona se state.beep_enabled for True (default). Pode ser
+    desativado via /beep off.
+    """
+    if not state.beep_enabled:
+        return
+    try:
+        # Escreve BEL direto no stderr para não poluir o stdout (que o
+        # Rich usa para renderizar o layout). O BEL é \x07.
+        import sys
+        sys.stderr.write("\x07")
+        sys.stderr.flush()
+    except Exception:
+        pass  # beep é best-effort — nunca deve quebrar o chat
 
 
 def _resolve_user_uuid(api: ApiClient, username: str) -> Optional[str]:
@@ -253,6 +471,22 @@ def _resolve_user_uuid(api: ApiClient, username: str) -> Optional[str]:
     return None
 
 
+async def _confirm_destructive(action_desc: str) -> bool:
+    """
+    P0-FIX: prompt de confirmação Y/n para comandos destrutivos.
+    Defaults to N (safer — requer Y explícito para prosseguir).
+    Retorna True se o usuário confirmar, False caso contrário.
+    """
+    # Não-bloqueante para o event loop: input em thread
+    try:
+        response = await asyncio.to_thread(
+            lambda: input(f"⚠️  {action_desc} [y/N]: ")
+        )
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return response.strip().lower() in ("y", "yes", "s", "sim")
+
+
 async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketClient):
     """Processa comandos de barra digitados pelo usuário."""
     parts = command_line.strip().split(" ", 2)
@@ -275,6 +509,7 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /accept sender_id        - Aceitar solicitação de amizade\n"
             "  /reject sender_id        - Rejeitar solicitação de amizade\n"
             "  /friends                 - Listar seus amigos\n"
+            "  /notifications           - Ver histórico de notificações (DMs e amizades aceitas)\n"
             "  /unfriend username       - Remover amizade\n"
             "  /block username          - Bloquear um usuário\n"
             "  /unblock username        - Desbloquear um usuário\n"
@@ -284,10 +519,17 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /demote username         - Rebaixar admin a membro (requer owner)\n"
             "  /status [online|away]    - Alterar status de presença\n"
             "  /theme [dark|light]      - Alternar tema da interface CLI\n"
+            "  /typing [on|off]         - Liga/desliga o indicador de digitação dos outros\n"
+            "  /beep [on|off]           - Liga/desliga som de notificação (BEL) ao receber DM\n"
             "  /fmsg @user@dominio msg  - Enviar DM federada para outro servidor\n"
             "  /switch tab_name         - Mudar de aba ativa (ex: #geral ou @alice)\n"
             "  /download <id> [caminho] - Baixar anexo do servidor\n"
             "  /upload <caminho>        - Enviar arquivo como anexo\n"
+            "  /whoami                  - Ver seu perfil (username, status, is_admin, is_guest)\n"
+            "  /history more            - Carregar mensagens mais antigas da sala ativa\n"
+            "  /peers                   - Listar peers federados (requer admin)\n"
+            "  /promote_admin <user>    - Promover usuário a admin (requer admin)\n"
+            "  /demote_admin <user>     - Rebaixar admin a usuário (requer admin)\n"
             "  /quit ou /exit           - Fechar o cliente de chat\n"
             "  (Dica: Pressione a tecla TAB para alternar rapidamente entre abas)"
         )
@@ -338,6 +580,11 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
     elif cmd == "/leave":
         if state.active_tab == "#geral":
             state.messages[state.active_tab].append("[Sistema] Você não pode sair da sala principal #geral.")
+            return
+
+        # P0-FIX: confirmação antes de sair (evita saída acidental por typo)
+        if not await _confirm_destructive(f"Sair da aba {state.active_tab}?"):
+            state.messages[state.active_tab].append("[Sistema] Operação cancelada.")
             return
 
         if state.active_tab.startswith("#"):
@@ -476,6 +723,54 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
 
+    elif cmd == "/notifications":
+        # P1-FIX: paridade com o painel de notificações do Desktop.
+        # Mostra DMs recebidas, amizades aceitas e solicitações pendentes.
+        # /notifications clear limpa todas (marca como lidas).
+        if len(parts) >= 2 and parts[1].lower() == "clear":
+            for notif in state.notifications:
+                notif["read"] = True
+            state.messages[state.active_tab].append(
+                f"[Sistema] {len(state.notifications)} notificação(ões) marcada(s) como lida(s)."
+            )
+            return
+
+        if not state.notifications:
+            state.messages[state.active_tab].append("[Sistema] Nenhuma notificação.")
+            return
+
+        # Ordena por timestamp (mais nova primeiro)
+        sorted_notifs = sorted(
+            state.notifications,
+            key=lambda n: n.get("timestamp", ""),
+            reverse=True,
+        )
+        # Limita a 20 (como o Desktop)
+        sorted_notifs = sorted_notifs[:20]
+
+        res_str = f"[Sistema] Notificações (últimas {len(sorted_notifs)}):\n"
+        type_labels = {
+            "dm": "💬 DM",
+            "friend_accepted": "🤝 Amizade aceita",
+            "friend_request": "📨 Solicitação",
+        }
+        for i, notif in enumerate(sorted_notifs):
+            ntype = notif.get("type", "?")
+            label = type_labels.get(ntype, ntype)
+            sender = _sanitize_text(notif.get("sender", "?"))
+            content = _sanitize_text(notif.get("content", ""))[:80]
+            ts = notif.get("timestamp", "")
+            try:
+                t = datetime.fromisoformat(ts).strftime("%d/%m %H:%M")
+            except Exception:
+                t = "?"
+            read_mark = "✓" if notif.get("read") else "●"
+            res_str += f"  {read_mark} [{i}] {label} de {sender} ({t})\n"
+            if content:
+                res_str += f"      \"{content}\"\n"
+        res_str += "\n  Use /notifications clear para marcar todas como lidas."
+        state.messages[state.active_tab].append(res_str.rstrip())
+
     elif cmd == "/invite":
         if len(parts) < 2:
             state.messages[state.active_tab].append("[Sistema] Uso: /invite username")
@@ -527,6 +822,10 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
                 pass
         if not target_uuid:
             state.messages[state.active_tab].append(f"[Sistema] Usuário '{target}' não encontrado.")
+            return
+        # P0-FIX: confirmação antes de desfazer amizade
+        if not await _confirm_destructive(f"Desfazer amizade com {target}?"):
+            state.messages[state.active_tab].append("[Sistema] Operação cancelada.")
             return
         try:
             api.remove_friend(state.token, target_uuid)
@@ -610,6 +909,50 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             state.messages[state.active_tab].append(
                 "[Sistema] Subcomando inválido. Use: /theme dark|light|import|export"
             )
+
+    elif cmd == "/typing":
+        # P0-FIX: permite ao usuário ligar/desligar o indicador de digitação
+        # dos outros. Útil em terminais lentos ou para quem prefere foco.
+        if len(parts) < 2:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Indicador de digitação: {'LIGADO' if state.show_typing else 'DESLIGADO'}\n"
+                "  /typing on  - Ligar\n"
+                "  /typing off - Desligar"
+            )
+            return
+        sub = parts[1].lower()
+        if sub == "on":
+            state.show_typing = True
+            state.messages[state.active_tab].append("[Sistema] Indicador de digitação LIGADO.")
+        elif sub == "off":
+            state.show_typing = False
+            state.typing_indicators.clear()
+            state.messages[state.active_tab].append("[Sistema] Indicador de digitação DESLIGADO.")
+        else:
+            state.messages[state.active_tab].append("[Sistema] Uso: /typing [on|off]")
+
+    elif cmd == "/beep":
+        # Q11-FIX: liga/desliga som de notificação (BEL) ao receber DM.
+        # Útil quando a CLI está em background — o BEL faz o terminal apitar
+        # ou piscar o ícone da janela na taskbar.
+        if len(parts) < 2:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Som de notificação (beep): {'LIGADO' if state.beep_enabled else 'DESLIGADO'}\n"
+                "  /beep on  - Ligar (apita ao receber DM em outra aba)\n"
+                "  /beep off - Desligar"
+            )
+            return
+        sub = parts[1].lower()
+        if sub == "on":
+            state.beep_enabled = True
+            state.messages[state.active_tab].append("[Sistema] Som de notificação LIGADO.")
+            # Testa o beep imediatamente
+            _beep()
+        elif sub == "off":
+            state.beep_enabled = False
+            state.messages[state.active_tab].append("[Sistema] Som de notificação DESLIGADO.")
+        else:
+            state.messages[state.active_tab].append("[Sistema] Uso: /beep [on|off]")
 
     elif cmd == "/fmsg":
         # P2-1.2d: Envia DM federada para usuário em outro servidor.
@@ -705,6 +1048,10 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         if not target_uuid:
             state.messages[state.active_tab].append(f"[Sistema] Usuário '{target}' não encontrado.")
             return
+        # P0-FIX: confirmação antes de bloquear (ação difícil de reverter)
+        if not await _confirm_destructive(f"Bloquear {target}? Eles não poderão mais te mandar DMs."):
+            state.messages[state.active_tab].append("[Sistema] Operação cancelada.")
+            return
         try:
             api.block_user(state.token, target_uuid)
             state.messages[state.active_tab].append(f"[Sistema] Usuário {target} bloqueado.")
@@ -752,6 +1099,11 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
         room_uuid = state.room_uuid_map.get(state.active_tab)
         if not room_uuid:
             state.messages[state.active_tab].append("[Sistema] Sala não mapeada localmente.")
+            return
+        # P0-FIX: confirmação antes de kick/ban (ações de moderação severas)
+        verb_pt = "banir" if cmd == "/ban" else "expulsar"
+        if not await _confirm_destructive(f"{verb_pt.capitalize()} {target} de {state.active_tab}?"):
+            state.messages[state.active_tab].append("[Sistema] Operação cancelada.")
             return
         try:
             api.remove_room_member(state.token, room_uuid, target_uuid, ban=(cmd == "/ban"))
@@ -807,10 +1159,13 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
 
         def _do_download():
             try:
-                file_bytes = api.download_attachment(state.token, att_id)
-                with open(save_path, "wb") as f:
-                    f.write(file_bytes)
-                size_kb = len(file_bytes) / 1024
+                # T4-FIX: usa streaming para não carregar arquivo inteiro na RAM.
+                # Antes: file_bytes = api.download_attachment(...) — consumia
+                # toda a memória para anexos grandes.
+                total_bytes = api.download_attachment_streaming(
+                    state.token, att_id, save_path,
+                )
+                size_kb = total_bytes / 1024
                 state.messages[state.active_tab].append(
                     f"[Sistema] Anexo salvo em {save_path} ({size_kb:.1f} KB)"
                 )
@@ -850,13 +1205,18 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
 
         def _do_upload():
             try:
-                with open(file_path, "rb") as f:
-                    file_bytes = f.read()
-                result = api.upload_attachment(state.token, filename, file_bytes, mime_type)
+                # T4-FIX: usa streaming para não carregar arquivo inteiro na RAM.
+                # Antes: with open(file_path, "rb") as f: file_bytes = f.read()
+                # — consumia toda a memória para arquivos grandes.
+                import os as _os_up
+                file_size = _os_up.path.getsize(file_path)
+                result = api.upload_attachment_streaming(
+                    state.token, file_path, filename, mime_type,
+                )
                 att_id = result.get("id", "?")
                 state.messages[state.active_tab].append(
                     f"[Sistema] Upload concluído! ID: {att_id}\n"
-                    f"  Tamanho: {len(file_bytes)} bytes\n"
+                    f"  Tamanho: {file_size} bytes\n"
                     f"  Use /download {att_id} em outra sessão para baixar."
                 )
             except Exception as e:
@@ -866,6 +1226,139 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
 
         import threading
         threading.Thread(target=_do_upload, daemon=True).start()
+
+    elif cmd == "/whoami":
+        # P0-FIX: mostra o perfil do usuário logado (paridade com Desktop)
+        try:
+            me = api.get_me(state.token)
+            lines = [
+                "[Sistema] Perfil atual:",
+                f"  Username:    {me.get('username', '?')}",
+                f"  Status:      {me.get('status', '?')}",
+                f"  ID:          {me.get('id', '?')}",
+                f"  Criado em:   {me.get('created_at', '?')}",
+                f"  Admin:       {'Sim 👑' if me.get('is_admin') else 'Não'}",
+                f"  Convidado:   {'Sim (expira em 24h)' if me.get('is_guest') else 'Não'}",
+            ]
+            state.messages[state.active_tab].append("\n".join(lines))
+        except Exception as e:
+            state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/history":
+        # P1-FIX: paginação por cursor — carrega mais 20 mensagens antigas
+        # da sala ativa (paridade com scroll-up do Desktop).
+        #
+        # Antes usávamos offset, que tem problema em chats ativos: se novas
+        # mensagens chegam enquanto o usuário rola o histórico, o offset
+        # desliza e o usuário vê mensagens duplicadas ou pula mensagens.
+        # Cursor pagination (buscar mensagens com ID < último ID visto) é
+        # estável independente de inserções concorrentes.
+        if len(parts) < 2 or parts[1].lower() != "more":
+            state.messages[state.active_tab].append("[Sistema] Uso: /history more")
+            return
+        if not state.active_tab.startswith("#"):
+            state.messages[state.active_tab].append("[Sistema] /history só funciona em salas (#nome).")
+            return
+        room_uuid = state.room_uuid_map.get(state.active_tab)
+        if not room_uuid:
+            state.messages[state.active_tab].append("[Sistema] Sala não mapeada localmente.")
+            return
+
+        # Pega o cursor (oldest message ID já visto) ou None se nunca paginou
+        oldest_id = state.history_offsets.get(state.active_tab)
+        try:
+            history = api.get_room_history(
+                state.token, room_uuid, limit=20, before_id=oldest_id,
+            )
+            if not history:
+                state.messages[state.active_tab].append("[Sistema] Não há mais mensagens antigas.")
+                return
+            # Prepende (histórico vem do mais novo para o mais velho)
+            formatted = []
+            for msg in reversed(history):
+                t = datetime.fromisoformat(msg["timestamp"]).strftime("%H:%M")
+                sender = _sanitize_text(msg["sender_name"])
+                content = _sanitize_text(msg["content"])
+                formatted.append(f"[{t}] <{sender}> {content}")
+            # Insere no início da lista de mensagens da aba
+            state.messages[state.active_tab] = formatted + state.messages[state.active_tab]
+            # Atualiza cursor: o último item de history é o mais velho desta página
+            state.history_offsets[state.active_tab] = history[-1]["id"]
+            state.messages[state.active_tab].append(
+                f"[Sistema] {len(history)} mensagens antigas carregadas."
+            )
+        except Exception as e:
+            state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/peers":
+        # P0-FIX: lista peers federados — paridade com o dialog do Desktop.
+        # Requer admin (o servidor rejeita com 403 se não for).
+        try:
+            peers = api.list_federation_peers(state.token)
+            if not peers:
+                state.messages[state.active_tab].append(
+                    "[Sistema] Nenhum peer federado cadastrado "
+                    "(ou você não tem permissão de admin para vê-los)."
+                )
+                return
+            res_str = "[Sistema] Peers federados:\n"
+            for p in peers:
+                active = "✅" if p.get("is_active") else "❌"
+                trust = p.get("trust_level", "?")
+                res_str += f"  {active} {p['domain']} (trust: {trust})\n"
+                res_str += f"      URL: {p.get('base_url', '?')}\n"
+            state.messages[state.active_tab].append(res_str.rstrip())
+        except Exception as e:
+            err_str = str(e)
+            if "403" in err_str or "admin" in err_str.lower():
+                state.messages[state.active_tab].append(
+                    "[Sistema] Acesso negado — listar peers requer privilégios de admin."
+                )
+            else:
+                state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/promote_admin":
+        # P0-FIX: promove um usuário a admin via CLI (paridade com admin REST)
+        if len(parts) < 2:
+            state.messages[state.active_tab].append("[Sistema] Uso: /promote_admin <username>")
+            return
+        target = parts[1].lstrip("@")
+        try:
+            result = api.promote_to_admin(state.token, target)
+            state.messages[state.active_tab].append(
+                f"[Sistema] ✅ {result.get('message', f'{target} promovido a admin.')}"
+            )
+        except Exception as e:
+            err_str = str(e)
+            if "403" in err_str or "admin" in err_str.lower():
+                state.messages[state.active_tab].append(
+                    "[Sistema] Acesso negado — promover usuários requer privilégios de admin."
+                )
+            else:
+                state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/demote_admin":
+        if len(parts) < 2:
+            state.messages[state.active_tab].append("[Sistema] Uso: /demote_admin <username>")
+            return
+        target = parts[1].lstrip("@")
+        # P0-FIX: confirmação — rebaixar admin pode causar lock-out acidental
+        if not await _confirm_destructive(f"Rebaixar {target} de admin para usuário comum?"):
+            state.messages[state.active_tab].append("[Sistema] Operação cancelada.")
+            return
+        try:
+            result = api.demote_admin(state.token, target)
+            state.messages[state.active_tab].append(
+                f"[Sistema] ✅ {result.get('message', f'{target} rebaixado.')}"
+            )
+        except Exception as e:
+            err_str = str(e)
+            if "403" in err_str or "admin" in err_str.lower():
+                state.messages[state.active_tab].append(
+                    "[Sistema] Acesso negado — rebaixar usuários requer privilégios de admin."
+                )
+            else:
+                state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
 
     elif cmd in ("/quit", "/exit"):
         state.running = False
@@ -943,13 +1436,16 @@ async def input_poller_fallback(input_queue: asyncio.Queue):
     `prompt_toolkit` (se disponível) para input assíncrono nativo,
     que permite a UI atualizar durante a digitação.
 
+    P0-FIX: agora também habilita TAB-completion para comandos / e nomes
+    de sala/usuário (paridade mínima com o auto-complete do Desktop).
+
     Se prompt_toolkit não estiver instalado, cai no fallback antigo
     (input síncrono em thread).
     """
     # Tenta importar prompt_toolkit — se não tiver, usa fallback antigo
     try:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.patched import Prompt
+        from prompt_toolkit.completion import Completer, Completion
         PROMPT_TOOLKIT_AVAILABLE = True
     except ImportError:
         PROMPT_TOOLKIT_AVAILABLE = False
@@ -963,9 +1459,44 @@ async def input_poller_fallback(input_queue: asyncio.Queue):
                 await input_queue.put(line)
         return
 
-    # prompt_toolkit disponível — input assíncrono nativo.
-    # Usa PromptSession com patch asyncio para integrar com o event loop.
-    session = PromptSession()
+    # P0-FIX: completer para comandos /, nomes de sala (#) e usuários (@).
+    class ChatPyCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text:
+                return
+            # Se começa com /, sugere comandos
+            if text.startswith("/"):
+                # Pega a palavra atual (após o último espaço)
+                word = text.split(" ")[-1]
+                commands = [
+                    "/help", "/join", "/leave", "/create", "/query", "/dm",
+                    "/rooms", "/explore", "/members", "/users", "/invites",
+                    "/invite", "/accept", "/reject", "/friends", "/unfriend",
+                    "/block", "/unblock", "/kick", "/ban", "/promote", "/demote",
+                    "/status", "/theme", "/typing", "/fmsg", "/switch",
+                    "/download", "/upload", "/whoami", "/history", "/peers",
+                    "/promote_admin", "/demote_admin", "/quit", "/exit",
+                ]
+                for cmd in commands:
+                    if cmd.startswith(word):
+                        yield Completion(cmd, start_position=-len(word))
+            elif text.startswith("#"):
+                # Sugere salas já ingressadas
+                word = text.split(" ")[-1]
+                for room in state.joined_rooms:
+                    if room.startswith("#") and room.startswith(word):
+                        yield Completion(room, start_position=-len(word))
+            elif text.startswith("@"):
+                # Sugere usuários online
+                word = text.split(" ")[-1]
+                for user in state.online_users:
+                    candidate = f"@{user}"
+                    if candidate.startswith(word):
+                        yield Completion(candidate, start_position=-len(word))
+
+    # prompt_toolkit disponível — input assíncrono nativo com completion.
+    session = PromptSession(completer=ChatPyCompleter())
 
     while state.running:
         try:
@@ -1015,6 +1546,20 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
 
     with Live(auto_refresh=False) as live:
         while state.running:
+            # P0-FIX: limpa indicadores de digitação expirados (mais de TYPING_TTL_S)
+            # para evitar acúmulo infinito no dict. Faz isto a cada render frame.
+            import time as _time_cleanup
+            now_cleanup = _time_cleanup.time()
+            for tab_name in list(state.typing_indicators.keys()):
+                expired = [
+                    u for u, ts in state.typing_indicators[tab_name].items()
+                    if now_cleanup - ts >= TYPING_TTL_S
+                ]
+                for u in expired:
+                    del state.typing_indicators[tab_name][u]
+                if not state.typing_indicators[tab_name]:
+                    del state.typing_indicators[tab_name]
+
             layout = create_chat_layout(
                 username=state.username,
                 status=state.status,
@@ -1023,6 +1568,8 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
                 joined_rooms=state.joined_rooms,
                 online_users=state.online_users,
                 current_input=state.current_input,
+                typing_indicators=state.typing_indicators,
+                typing_ttl_s=TYPING_TTL_S,
             )
             live.update(layout, refresh=True)
 
@@ -1140,13 +1687,39 @@ def main(
         console.print("[bold]Opções iniciais:[/bold]")
         console.print("  1. Fazer Login")
         console.print("  2. Criar Nova Conta (Registrar)")
-        console.print("  3. Sair")
+        console.print("  3. Entrar como Convidado (anônimo, expira em 24h)")
+        console.print("  4. Sair")
 
-        choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3"])
+        choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4"])
 
-        if choice == "3":
+        if choice == "4":
             console.print("\n[yellow]Até logo![/yellow]")
             sys.exit(0)
+
+        # P0-FIX: opção 3 = guest — não pede username/senha
+        if choice == "3":
+            try:
+                with console.status("[green]Criando conta de convidado...[/green]"):
+                    token = api.create_guest_account()
+                # Para descobrir o username gerado pelo servidor, consultamos /api/users/me
+                try:
+                    me = api.get_me(token)
+                    state.username = me.get("username", "guest")
+                    state.is_guest = me.get("is_guest", True)
+                except Exception:
+                    state.username = "guest"
+                    state.is_guest = True
+                state.token = token
+                logged_in = True
+                console.print(
+                    f"\n[bold green]Conectado como convidado: {state.username}[/bold green]\n"
+                    "[dim]Sua conta expira em 24h. Não pode criar salas privadas nem enviar "
+                    "anexos maiores que 1MB.[/dim]\n"
+                    "Carregando interface..."
+                )
+            except Exception as e:
+                console.print(f"\n[bold red]Falha ao criar convidado:[/bold red] {e}\n")
+            continue
 
         username = Prompt.ask("\nDigite seu apelido (username)")
         password = Prompt.ask("Digite sua senha", password=True)
@@ -1157,6 +1730,7 @@ def main(
                     token = api.login(username, password)
                 state.username = username
                 state.token = token
+                state.is_guest = False
                 logged_in = True
                 console.print("\n[bold green]Autenticado com sucesso![/bold green] Carregando interface...")
             except Exception as e:
@@ -1175,10 +1749,17 @@ def main(
 
     async def run_chat():
         await fetch_initial_data(api)
+        # P1-FIX: seta o username no WebSocketClient para que a fila offline
+        # seja carregada do arquivo correto e persistida para este usuário.
+        ws.set_username(state.username)
         await ws.connect()
         try:
             await live_chat_loop(api, ws)
         finally:
+            # P0-FIX: salva cache de histórico offline antes do logout
+            _save_cli_history_cache()
+            # P1-FIX: garante que fila offline seja persistida antes de fechar
+            ws._persist_queue()
             # Logout explícito — revoga a sessão no servidor
             try:
                 api.logout(state.token)

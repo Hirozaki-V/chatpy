@@ -122,10 +122,13 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db_api)
     configuráveis via env (LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_SECONDS,
     LOGIN_LOCK_SECONDS). O contador sobrevive a restarts (SQLite).
     """
-    # Captura IP para auditoria (X-Forwarded-For se atrás de proxy reverso)
-    ip_address = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    if not ip_address:
-        ip_address = request.client.host if request.client else None
+    # T1-FIX: captura IP para auditoria de forma segura.
+    # Antes confiávamos cegamente em X-Forwarded-For, permitindo spoofing.
+    # Agora só confiamos no header se veio de proxy confiável (TRUSTED_PROXIES).
+    from server.security_ip import get_client_ip
+    ip_address = get_client_ip(request)
+    if ip_address == "unknown":
+        ip_address = None
 
     # #1: Rate limit agressivo para login (10 req/min por IP) — complementa
     # o anti brute-force por username (P0-8). Atacante que tenta 100 usernames

@@ -17,6 +17,11 @@ python-dotenv==1.0.1
 # CLI
 typer>=0.9.0
 rich>=13.0.0
+# P0-FIX: input assíncrono no Unix + tab-completion — antes era só recomendado
+# no requirements-cli.txt, mas faltava aqui (instalação completa). Sem isto,
+# a CLI cai no fallback síncrono (input() em thread) e perde o feedback visual
+# durante a digitação + auto-complete de comandos.
+prompt_toolkit>=3.0.0
 
 # Desktop
 PySide6>=6.0.0

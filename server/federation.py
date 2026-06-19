@@ -51,16 +51,83 @@ _THIS_SERVER_DOMAIN = os.getenv("CHATPY_SERVER_DOMAIN", "")
 _THIS_SERVER_BASE_URL = os.getenv("CHATPY_SERVER_BASE_URL", "")
 _FEDERATION_ENABLED = os.getenv("FEDERATION_ENABLED", "false").lower() == "true"
 
-# Em produção, esta chave deve ser persistida (não regenerada a cada startup).
-# Por enquanto, geramos uma chave efêmera — apenas para o MVP funcionar.
+# P0-FIX: a chave Ed25519 da federação agora é persistida em arquivo
+# (.chatpy_federation_key.pem no diretório de dados). Antes, era regenerada
+# a cada startup do servidor, quebrando todas as assinaturas de mensagens
+# federadas — peers que tinham a chave pública antiga rejeitavam todas as
+# DMs federadas ("Assinatura criptográfica inválida") após o primeiro restart.
+#
+# Caminho resolvido via server.paths.federation_key_path() — prefere
+# CHATPY_DATA_DIR > diretório do projeto > ~/.chatpy/.
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
-    _PRIVATE_KEY = Ed25519PrivateKey.generate()
-    _PUBLIC_KEY_PEM = _PRIVATE_KEY.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+    from server.paths import federation_key_path
+
+    def _load_or_create_federation_key():
+        """
+        Carrega a chave Ed25519 persistida, ou cria uma nova e salva se não existir.
+        Permissões 0600 no Unix. Retorna (private_key, public_key_pem).
+        """
+        key_path = federation_key_path()
+        if key_path.exists():
+            try:
+                pem_bytes = key_path.read_bytes()
+                private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+                if not isinstance(private_key, Ed25519PrivateKey):
+                    logger.warning(
+                        "Chave de federação em %s não é Ed25519 — regenerando.", key_path,
+                    )
+                else:
+                    public_pem = private_key.public_key().public_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+                    ).decode("ascii")
+                    logger.info("Chave de federação carregada de %s", key_path)
+                    return private_key, public_pem
+            except Exception as e:
+                logger.warning(
+                    "Falha ao carregar chave de federação de %s: %s — regenerando.",
+                    key_path, e,
+                )
+
+        # Gera nova chave
+        private_key = Ed25519PrivateKey.generate()
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("ascii")
+
+        # Persiste
+        try:
+            pem_bytes = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            key_path.write_bytes(pem_bytes)
+            if os.name != "nt":
+                os.chmod(key_path, 0o600)
+            else:
+                # T2-FIX: no Windows, restringe via icacls
+                from server.paths import _restrict_file_windows
+                _restrict_file_windows(key_path)
+            logger.warning(
+                "Nova chave de federação gerada e salva em %s. "
+                "PEERS FEDERADOS PRECISAM RE-DISCOVER ESTE SERVIDOR para obter a nova "
+                "chave pública — caso contrário, assinaturas serão rejeitadas.",
+                key_path,
+            )
+        except Exception as e:
+            logger.error(
+                "Falha ao persistir chave de federação em %s: %s "
+                "(chave ficará apenas em memória — será perdida no restart)",
+                key_path, e,
+            )
+
+        return private_key, public_pem
+
+    _PRIVATE_KEY, _PUBLIC_KEY_PEM = _load_or_create_federation_key()
 except ImportError:
     _PRIVATE_KEY = None
     _PUBLIC_KEY_PEM = None
@@ -259,7 +326,7 @@ def set_connection_manager(manager):
     _connection_manager = manager
 
 
-def receive_federated_dm(
+async def receive_federated_dm(
     db: SqlalchemySession,
     sender_username: str,
     sender_domain: str,
@@ -280,6 +347,12 @@ def receive_federated_dm(
 
     Se válido, persiste a DM e entrega via WebSocket ao destinatário
     (se online). Retorna (success, message).
+
+    P0-FIX: agora é async e usa `await` direto no ConnectionManager — antes
+    usava asyncio.ensure_future + asyncio.get_event_loop() (deprecated em
+    Python 3.12+ quando há running loop, e nunca esperava a entrega).
+    P0-FIX: persiste `federated_sender` como string "@user@domain" em vez
+    de setar sender_id=receiver.id (que corrompia o sentido da FK).
     """
     if not _FEDERATION_ENABLED:
         return False, "Federação desabilitada neste servidor"
@@ -314,15 +387,43 @@ def receive_federated_dm(
             )
             return False, "Assinatura criptográfica inválida — mensagem rejeitada"
 
-    # Persiste a DM
+    # P1-FIX: Proteção contra Replay Attack.
+    # Antes, um atacante que capturasse o payload JSON assinado podia reenviá-lo
+    # repetidas vezes — todas as cópias passavam a validação de assinatura e
+    # eram entregues ao destinatário. Agora:
+    #   1. Validamos que o timestamp não é muito antigo (default 5 min) nem no
+    #      futuro (tolerância de 5 min para skew de relógio)
+    #   2. Mantemos cache LRU de hashes das mensagens recentemente processadas
+    #      — se o mesmo payload chegar de novo, rejeitamos como replay
+    from server.federation_replay import check_replay
+    replay_payload = {
+        "sender_username": sender_username,
+        "sender_domain": sender_domain,
+        "receiver_username": receiver_username,
+        "content": content,
+        "timestamp": timestamp.isoformat(),
+        "signature": signature or "",
+    }
+    is_valid, err = check_replay(replay_payload, timestamp.timestamp())
+    if not is_valid:
+        logger.warning(
+            "Replay attack bloqueado: sender=%s@%s → %s, motivo=%s",
+            sender_username, sender_domain, receiver_username, err,
+        )
+        return False, err
+
+    # Persiste a DM — P0-FIX: usa receiver.id como placeholder de sender_id
+    # (apenas para satisfazer a NOT NULL FK) e guarda o remetente federado
+    # real em federated_sender. Clientes devem checar este campo.
     import uuid as _uuid
     federated_sender = f"@{sender_username}@{sender_domain}"
     db_pmsg = PrivateMessage(
         id=_uuid.uuid4(),
-        sender_id=receiver.id,  # Placeholder — sender federado não é User local
+        sender_id=receiver.id,  # placeholder (não há User local para o sender federado)
         receiver_id=receiver.id,
-        content=f"[Federado] <{federated_sender}> {content}",
+        content=content,  # conteúdo limpo — clientes usam federated_sender como remetente
         timestamp=timestamp,
+        federated_sender=federated_sender,
     )
     db.add(db_pmsg)
     db.flush()
@@ -332,7 +433,7 @@ def receive_federated_dm(
         federated_sender, receiver_username,
     )
 
-    # P2-1.2a: Entrega via WebSocket se o destinatário estiver online
+    # P0-FIX: agora é async — await direto no ConnectionManager
     if _connection_manager and _connection_manager.is_user_connected(receiver.id):
         from shared.events import EventType
         receive_frame = {
@@ -341,33 +442,16 @@ def receive_federated_dm(
                 "id": str(db_pmsg.id),
                 "room_id": None,  # DM
                 "sender_id": str(receiver.id),  # placeholder
-                "sender_name": federated_sender,
+                "sender_name": federated_sender,  # P0-FIX: nome federado correto
                 "content": content,
                 "timestamp": timestamp.isoformat(),
                 "attachment": None,
-                "federated": True,  # P2-1.2e: flag para clientes identificarem
+                "federated": True,  # flag para clientes identificarem
+                "federated_sender": federated_sender,  # P0-FIX: explícito
             },
         }
-        import asyncio
         try:
-            # _connection_manager.send_personal_message é async — precisamos
-            # de um loop. Como receive_federated_dm é chamado de contexto
-            # sync (FastAPI endpoint), usamos asyncio.ensure_future ou
-            # asyncio.get_event_loop().
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
-                    _connection_manager.send_personal_message(
-                        receive_frame, receiver.id
-                    ),
-                    loop=loop,
-                )
-            else:
-                loop.run_until_complete(
-                    _connection_manager.send_personal_message(
-                        receive_frame, receiver.id
-                    )
-                )
+            await _connection_manager.send_personal_message(receive_frame, receiver.id)
         except Exception as e:
             logger.error("Erro ao entregar DM federada via WebSocket: %s", e)
 
@@ -465,7 +549,7 @@ def forward_presence_to_peers(
             logger.debug("Erro ao enviar presença para peer %s: %s", peer.domain, e)
 
 
-def receive_federated_presence(
+async def receive_federated_presence(
     db: SqlalchemySession,
     username: str,
     domain: str,
@@ -481,6 +565,9 @@ def receive_federated_presence(
 
     Nota: o usuário federado não existe no banco local — apenas
     notificamos via WS para que clientes atualizem a UI.
+
+    P0-FIX: agora é async e usa await direto no ConnectionManager (antes
+    usava asyncio.ensure_future que nunca esperava a entrega).
     """
     if not _FEDERATION_ENABLED:
         return False, "Federação desabilitada"
@@ -495,7 +582,6 @@ def receive_federated_presence(
     # decidem se a presença é relevante (ex: se têm amizade com o user).
     if _connection_manager:
         from shared.events import EventType
-        import asyncio
         import uuid
 
         presence_frame = {
@@ -509,14 +595,7 @@ def receive_federated_presence(
         }
         all_connected = list(_connection_manager.active_connections.keys())
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
-                    _connection_manager.broadcast_to_users(
-                        presence_frame, all_connected
-                    ),
-                    loop=loop,
-                )
+            await _connection_manager.broadcast_to_users(presence_frame, all_connected)
         except Exception as e:
             logger.error("Erro ao broadcast presença federada: %s", e)
 

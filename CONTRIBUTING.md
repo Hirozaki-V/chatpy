@@ -14,6 +14,7 @@ pip install -r requirements.txt
 pip install pytest pytest-asyncio
 
 # Configure ambiente
+# JWT_SECRET é auto-gerado se não configurado — mas para dev, defina explicitamente:
 export JWT_SECRET="dev-secret-key-min-16-chars"
 export DATABASE_URL="sqlite:///dev.db"
 

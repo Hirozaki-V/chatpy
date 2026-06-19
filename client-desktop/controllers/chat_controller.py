@@ -333,11 +333,57 @@ class ChatController(QObject):
         """
         Slot Main Thread: aplica histórico carregado de uma sala reaberta
         (usado quando salas fixadas/favoritadas são restauradas após login).
+
+        P0-FIX: antes, este método SOBRESCREVIA o histórico local com o do
+        servidor. Isto era OK para salas nunca abertas, mas em salas que
+        tinham mensagens próprias em cache local (enviadas offline e
+        enfileiradas via _offline_queue do WebSocketClient), as mensagens
+        locais eram perdidas visualmente — o usuário pensava que o envio
+        falhou mesmo tendo sido entregue ao servidor.
+
+        Agora fazemos MERGE: combinamos histórico do servidor com mensagens
+        locais, deduplicando por (sender, content, timestamp aproximado).
+        Mensagens locais que NÃO estão no servidor (ainda em fila offline)
+        são mantidas; mensagens que estão em ambos aparecem só uma vez.
         """
         if room_name not in self.state.messages:
             self.state.messages[room_name] = []
-        # Substitui o histórico atual (caso a sala já tivesse mensagens locais)
-        self.state.messages[room_name] = history
+
+        local_msgs = self.state.messages[room_name]
+
+        # Se não há mensagens locais, simplesmente substitui
+        if not local_msgs:
+            self.state.messages[room_name] = history
+            self.state_updated.emit()
+            return
+
+        # Se há mensagens locais, faz merge por chave (sender, content, timestamp)
+        # Timestamp é comparado com tolerância de 5s para compensar diferenças
+        # de relógio entre cliente e servidor.
+        def _key(msg):
+            sender = msg.get("sender", "")
+            content = msg.get("content", "")
+            ts = msg.get("timestamp", "")
+            # Trunca timestamp para segundos (descarta microssegundos)
+            if ts and len(ts) >= 19:
+                ts = ts[:19]
+            return (sender, content, ts)
+
+        server_keys = {_key(m) for m in history}
+
+        # Mensagens locais que NÃO estão no servidor — mantém (são pendentes
+        # ou foram enviadas offline e ainda não sincronizadas)
+        local_only = [m for m in local_msgs if _key(m) not in server_keys]
+
+        # Combina: histórico do servidor + mensagens locais exclusivas
+        # (preserva ordem: histórico do servidor primeiro, depois locais)
+        merged = list(history) + local_only
+
+        # Limita a 200 mensagens por aba para não estourar memória
+        if len(merged) > 200:
+            merged = merged[-200:]
+
+        self.state.messages[room_name] = merged
         self.state_updated.emit()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -707,6 +753,14 @@ class ChatController(QObject):
         try:
             self.service.api.update_status(self.state.token, status)
             self.state.status = status
+            # P0-FIX: persiste preferência de status — no próximo login, o
+            # usuário volta com o mesmo status que escolheu (em vez de
+            # sempre "online"). Apenas persiste se for online/away (offline
+            # não faz sentido como "preferido").
+            if status in ("online", "away"):
+                from models.state import save_user_config
+                self.state.preferred_status = status
+                save_user_config(self.state.pinned_tabs, self.state.favorite_tabs, status)
             self.status_message.emit(f"Seu status foi alterado para: {status}.", 3000)
             self.state_updated.emit()
         except Exception as e:

@@ -99,3 +99,77 @@ class RateLimiter:
             else:
                 self.user_message_timestamps.pop(username, None)
                 self.user_mute_until.pop(username, None)
+
+
+# ---------------------------------------------------------------------------
+# P0-FIX: Rate limit de conexões WS NÃO-AUTENTICADAS por IP.
+#
+# Antes, um atacante podia abrir milhares de conexões WS por segundo e
+# esperar o timeout de 30s do dispatcher (que pede autenticação após o
+# accept) sem enviar nada. Cada conexão consome um socket + uma task
+# asyncio; sem limite, isto é DoS trivial.
+#
+# Este guard mantém um contador por IP de conexões PENDENTES de auth.
+# Acima do limite, a conexão é recusada com 1008 antes mesmo de accept.
+# ---------------------------------------------------------------------------
+import asyncio
+from collections import defaultdict
+
+
+class UnauthConnectionGuard:
+    """
+    Limita conexões WS não-autenticadas por IP.
+
+    Funcionamento:
+      - try_acquire(ip): chamado ANTES do accept no endpoint WS.
+        Retorna True se o IP ainda tem slot, False se excedeu.
+      - release(ip): chamado APÓS auth success OU desconexão.
+        Decrementa o contador para liberar o slot.
+
+    Limite configurável via env WS_MAX_UNAUTH_PER_IP (default 10).
+    Limite global de conexões não-autenticadas: WS_MAX_UNAUTH_GLOBAL
+    (default 1000) — protege contra botnets que usam muitos IPs.
+    """
+
+    def __init__(
+        self,
+        max_per_ip: int = None,
+        max_global: int = None,
+    ):
+        import os
+        self.max_per_ip = max_per_ip or int(os.getenv("WS_MAX_UNAUTH_PER_IP", "10"))
+        self.max_global = max_global or int(os.getenv("WS_MAX_UNAUTH_GLOBAL", "1000"))
+        self._per_ip: dict = defaultdict(int)
+        self._global: int = 0
+        self._lock = asyncio.Lock()
+
+    async def try_acquire(self, ip: str) -> bool:
+        """Tenta reservar um slot de conexão não-autenticada. Retorna False se excedeu."""
+        async with self._lock:
+            if self._global >= self.max_global:
+                return False
+            if self._per_ip[ip] >= self.max_per_ip:
+                return False
+            self._per_ip[ip] += 1
+            self._global += 1
+            return True
+
+    async def release(self, ip: str):
+        """Libera um slot (após auth success ou disconnect)."""
+        async with self._lock:
+            if self._per_ip[ip] > 0:
+                self._per_ip[ip] -= 1
+                if self._per_ip[ip] == 0:
+                    del self._per_ip[ip]
+            if self._global > 0:
+                self._global -= 1
+
+    async def get_stats(self) -> dict:
+        """Retorna estatísticas para monitoramento."""
+        async with self._lock:
+            return {
+                "max_per_ip": self.max_per_ip,
+                "max_global": self.max_global,
+                "current_global": self._global,
+                "current_ips": len(self._per_ip),
+            }

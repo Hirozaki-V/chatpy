@@ -24,7 +24,13 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATABASE_URL=sqlite:////app/data/chatpy.db \
-    UPLOAD_DIR=/app/uploads
+    UPLOAD_DIR=/app/uploads \
+    # P1-FIX: arquivos persistentes (JWT secret, chave de federação, cache)
+    # agora ficam em /app/data — que DEVE ser mapeado como volume no docker
+    # run -v chatpy_data:/app/data. Antes, o paths.py caía no diretório do
+    # projeto (/app) que é destruído quando o container é recriado — invalidando
+    # todas as sessões JWT e quebrando a federação a cada restart.
+    CHATPY_DATA_DIR=/app/data
 
 # Instala curl para healthcheck e tini para init correto de processos
 RUN apt-get update && \

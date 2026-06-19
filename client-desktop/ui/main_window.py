@@ -62,6 +62,7 @@ from ui.helpers import (
     _get_username_from_item,
     _clean_tab_text,
 )
+from utils.async_helper import run_in_background
 
 
 class MainWindow(QMainWindow):
@@ -119,7 +120,13 @@ class MainWindow(QMainWindow):
             self._on_initial_connect("Conectado")
 
     def _on_initial_connect(self, status: str):
-        """Marca presença 'online' apenas na primeira conexão bem-sucedida."""
+        """
+        Marca presença apenas na primeira conexão bem-sucedida.
+
+        P0-FIX: antes, forçava sempre "online" no startup — ignorando a
+        preferência do usuário (que pode ter setado "away" antes do logout).
+        Agora usa o preferred_status persistido em user_config.json.
+        """
         if not getattr(self, "_initial_status_pending", False):
             return
         if status != "Conectado":
@@ -129,9 +136,14 @@ class MainWindow(QMainWindow):
             self.controller.connection_status_changed.disconnect(self._on_initial_connect)
         except (RuntimeError, TypeError):
             pass
+        # P0-FIX: usa o status preferido pelo usuário (default "online")
+        preferred = getattr(self.controller.state, "preferred_status", "online")
+        # Valid defensivo — se o valor persistido for inválido, cai em "online"
+        if preferred not in ("online", "away"):
+            preferred = "online"
         # Executa em thread para não bloquear a UI
         # #8: usa QThreadPool via helper
-        run_in_background(lambda: self.controller.change_status("online"))
+        run_in_background(lambda: self.controller.change_status(preferred))
 
     def _setup_notifications(self):
         """
@@ -386,8 +398,13 @@ class MainWindow(QMainWindow):
         # P0-6: restaura tamanho do splitter se salvo, senão usa default
         settings_key_user = self.controller.state.username or "default"
         saved_splitter = self._settings.value(f"splitter/{settings_key_user}")
-        if saved_splitter and isinstance(saved_splitter, list) and len(saved_splitter) == 2:
-            splitter.setSizes(saved_splitter)
+        if saved_splitter and isinstance(saved_splitter, list) and len(saved_splitter) >= 2:
+            # QSettings no Windows/Python 3.10 pode retornar strings em vez de ints
+            try:
+                int_sizes = [int(s) for s in saved_splitter]
+                splitter.setSizes(int_sizes)
+            except (ValueError, TypeError):
+                splitter.setSizes([710, 240])
         else:
             splitter.setSizes([710, 240])
         # Mantém referência para salvar no closeEvent
@@ -560,6 +577,21 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _handle_status_change(self, status: str):
+        """
+        P1-FIX: quando o usuário muda manualmente o status, resetamos o timer
+        de inatividade para evitar race condition. Antes, se o usuário mudava
+        para "online" e o idle_timer disparava antes do próximo evento de
+        mouse/teclado, ele era forçado de volta para "away" mesmo tendo
+        acabado de mudar manualmente.
+
+        Também resetamos a flag _auto_away_active para garantir que o
+        eventFilter saiba que o status atual é intencional (não auto).
+        """
+        self._last_activity_ts = time.time()
+        # Se o usuário mudou manualmente para online/away, _auto_away_active
+        # deve ser False — a próxima detecção de atividade NÃO vai forçar
+        # mudança de status.
+        self._auto_away_active = False
         self.controller.change_status(status)
 
     def _handle_join_room(self):
@@ -832,7 +864,6 @@ class MainWindow(QMainWindow):
                 self._loading_members_for.discard(room_name)
 
         # P1-6: usa helper de threading unificado (QThreadPool em vez de Thread direto)
-        from utils.async_helper import run_in_background
         run_in_background(worker)
 
     @Slot(str, list)
@@ -1007,6 +1038,34 @@ class MainWindow(QMainWindow):
             should_autoscroll = scrollbar.value() >= scrollbar.maximum() - 50
 
             browser.append(html_msg)
+
+            # T6-FIX: limita o número de mensagens renderizadas no QTextBrowser.
+            # Antes, o HTML acumulava indefinidamente — com milhares de
+            # mensagens, o QTextBrowser ficava lento (re-parse de HTML inteiro
+            # a cada append) e consumia muita RAM. Agora, quando passa de
+            # MAX_RENDERED_MESSAGES, truncamos as mais antigas.
+            # Default: 500 mensagens (suficiente para contexto sem travar).
+            import os as _os_t6
+            max_msgs = int(_os_t6.getenv("DESKTOP_MAX_RENDERED_MESSAGES", "500"))
+            if not hasattr(self, "_msg_counts"):
+                self._msg_counts: Dict[str, int] = {}
+            self._msg_counts[tab_name] = self._msg_counts.get(tab_name, 0) + 1
+            if self._msg_counts[tab_name] > max_msgs:
+                # Trunca: pega apenas o conteúdo textual, corta pela metade,
+                # e redefine. Isto é mais barato que manipular HTML.
+                # Estratégia: a cada N excedentes, recorta o document para
+                # manter apenas as últimas max_msgs/2 mensagens.
+                if self._msg_counts[tab_name] > max_msgs * 2:
+                    # Recorta agressivamente — pega texto das últimas mensagens
+                    cursor = browser.textCursor()
+                    cursor.select(QTextCursor.Document)
+                    text = cursor.selectedText()
+                    # Mantém apenas as últimas ~5000 chars (aprox 200 msgs)
+                    if len(text) > 5000:
+                        text = "…[histórico truncado]…\n" + text[-5000:]
+                        cursor.insertText(text)
+                    self._msg_counts[tab_name] = max_msgs  # reseta contador
+
             if should_autoscroll:
                 browser.moveCursor(QTextCursor.End)
 

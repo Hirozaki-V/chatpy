@@ -76,13 +76,16 @@ class RESTRateLimiter:
         self._block_duration = 60  # 1 min de cooldown após exceder
 
     def _get_client_ip(self, request: Request) -> str:
-        """Extrai IP do cliente (suporta X-Forwarded-For de proxies)."""
-        forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        if forwarded:
-            return forwarded
-        if request.client:
-            return request.client.host
-        return "unknown"
+        """
+        Extrai IP do cliente de forma segura.
+
+        T1-FIX: antes confiávamos cegamente em X-Forwarded-For, permitindo
+        spoofing por atacantes que enviavam o header falso para burlar rate
+        limit ou bloquear IPs de vítimas legítimas. Agora só confiamos no
+        header se o request veio de um proxy confiável (TRUSTED_PROXIES).
+        """
+        from server.security_ip import get_client_ip
+        return get_client_ip(request)
 
     def check(self, request: Request) -> Tuple[bool, Optional[str], int]:
         """

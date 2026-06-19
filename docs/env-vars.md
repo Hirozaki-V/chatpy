@@ -2,11 +2,11 @@
 
 Todas as variáveis que o ChatPy aceita, organizadas por categoria.
 
-## Segurança (obrigatórias)
+## Segurança
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `JWT_SECRET` | (obrigatório) | Chave para assinar JWT. Mínimo 16 caracteres. |
+| `JWT_SECRET` | (auto-gerado) | Chave para assinar JWT. Se não configurada, é auto-gerada e salva em `.chatpy_auto_secret`. Para produção, defina explicitamente. Mínimo 16 caracteres. |
 
 ## Banco de dados
 

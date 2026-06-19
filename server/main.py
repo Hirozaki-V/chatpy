@@ -38,15 +38,20 @@ logger = logging.getLogger("chatpy.main")
 # Validação obrigatória de JWT_SECRET em startup (fail-fast)
 # ---------------------------------------------------------------------------
 def _validate_jwt_secret():
+    """
+    #1: Valida JWT_SECRET do ambiente. Se não estiver configurado,
+    NÃO falha mais — _get_jwt_secret() em security.py auto-gera e
+    persiste. Aqui só validamos SE o usuário configurou manualmente
+    e a chave é muito curta.
+    """
     secret = os.getenv("JWT_SECRET")
-    if not secret:
-        raise RuntimeError(
-            "A variável de ambiente 'JWT_SECRET' é obrigatória. "
-            "Crie um arquivo .env com JWT_SECRET=<chave-aleatória-longa> ou "
-            "export JWT_SECRET=... antes de iniciar o servidor."
-        )
-    if len(secret) < 16:
+    if secret and len(secret) < 16:
         raise RuntimeError("'JWT_SECRET' deve ter no mínimo 16 caracteres.")
+    if not secret:
+        logger.info(
+            "JWT_SECRET não configurado — será auto-gerado automaticamente. "
+            "Para produção, defina JWT_SECRET no arquivo .env."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +65,24 @@ async def lifespan(app: FastAPI):
     logger.info("JWT_SECRET validado.")
     init_db()
     logger.info("Banco de dados inicializado.")
+
+    # #5: Primeiro-run detection — se não há usuários, mostra instruções
+    try:
+        from server.database.connection import get_db
+        from server.database.models import User
+        with get_db() as db:
+            user_count = db.query(User).count()
+        if user_count == 0:
+            logger.info("=" * 60)
+            logger.info("PRIMEIRA EXECUÇÃO DETECTADA — nenhum usuário cadastrado.")
+            logger.info("Para criar sua conta:")
+            logger.info("  1. Abra http://localhost:5000/admin no navegador")
+            logger.info("  2. Ou use o cliente: python client-desktop/main.py")
+            logger.info("  3. Clique em 'Não tem conta? Cadastre-se'")
+            logger.info("  Ou via API: POST /api/auth/register")
+            logger.info("=" * 60)
+    except Exception:
+        pass
 
     cleanup_task = asyncio.create_task(_attachment_cleanup_loop())
     logger.info("Tarefa de limpeza de anexos órfãos iniciada (intervalo: 1h).")
@@ -87,6 +110,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("LAN discovery desabilitado")
 
+    # P1-FIX: Heartbeat WS para detectar conexões zumbis. O manager é criado
+    # depois do lifespan começar (ver seção abaixo), então agendamos o
+    # start_heartbeat para rodar após o primeiro yield — mas na verdade o
+    # manager é criado em módulo (não dentro do lifespan), então podemos
+    # iniciar aqui mesmo. Verificamos se o atributo existe por segurança.
+    try:
+        # O manager é definido mais abaixo no arquivo (module-level), mas
+        # o lifespan roda no startup do uvicorn (depois do module load).
+        # Verificamos se está disponível via app.state (setado abaixo).
+        manager_ref = getattr(app.state, "manager", None)
+        if manager_ref is not None:
+            import os as _os_hb
+            interval = int(_os_hb.getenv("WS_HEARTBEAT_INTERVAL_SECONDS", "30"))
+            timeout = int(_os_hb.getenv("WS_HEARTBEAT_TIMEOUT_SECONDS", "60"))
+            manager_ref.start_heartbeat(interval_seconds=interval, timeout_seconds=timeout)
+    except Exception as e:
+        logger.warning("Falha ao iniciar heartbeat WS: %s", e)
+
     # Expõe no app.state para shutdown
     app.state._cleanup_task = cleanup_task
     app.state._guest_cleanup_task = guest_cleanup_task
@@ -112,6 +153,19 @@ async def lifespan(app: FastAPI):
             await backup_task
         except asyncio.CancelledError:
             pass
+    # P1-FIX: para o heartbeat WS antes de desligar
+    try:
+        manager_ref = getattr(app.state, "manager", None)
+        if manager_ref is not None:
+            await manager_ref.stop_heartbeat()
+    except Exception as e:
+        logger.warning("Erro ao parar heartbeat WS: %s", e)
+    # T3-FIX: fecha o Pub/Sub broker (Redis) antes de desligar
+    try:
+        from server.pubsub import close_broker
+        await close_broker()
+    except Exception as e:
+        logger.warning("Erro ao fechar Pub/Sub broker: %s", e)
     # #7: para de anunciar via mDNS
     try:
         from server.lan_discovery import stop_announcing
@@ -141,6 +195,7 @@ async def _guest_cleanup_loop():
         try:
             def _do_purge():
                 from server.auth.service import purgar_guests_expirados
+                from server.database.connection import get_db
                 with get_db() as db:
                     count = purgar_guests_expirados(db)
                     if count > 0:
@@ -192,14 +247,28 @@ _cors_origins = [o.strip() for o in _cors_origins if o.strip()]
 # (caso de uso central do projeto — "qualquer um pode hospedar"). Incluímos
 # também a origem do próprio host (http://<meu-ip>:5000) por padrão, e
 # mantemos a possibilidade de abrir para "*" via CORS_ORIGINS=*.
+# P0-FIX: Starlette/Flask-style CORS proíbe allow_origins=["*"] combinado com
+# allow_credentials=True — gera ValueError no startup. Detectamos o caso e
+# ajustamos: quando o operador pede "*", desligamos credentials (não há como
+# o navegador enviar cookies/Authorization para origem "*" mesmo, e o cliente
+# ChatPy envia Authorization via header, não cookie — logo, seguro).
 if "*" in _cors_origins:
     _cors_origins_resolved = ["*"]
+    _cors_allow_credentials = False
+    logger.warning(
+        "CORS_ORIGINS=* detectado — allow_credentials desligado "
+        "(compatível com Starlette). Clientes ChatPy usam header Authorization, "
+        "não cookies, então isto é seguro."
+    )
 else:
     _cors_origins_resolved = list(_cors_origins)
-    # Adiciona origens comuns para servidores LAN (apenas se não estiver usando *)
+    _cors_allow_credentials = True
+    # P0-FIX: usa get_local_ip() do lan_discovery (UDP socket para 8.8.8.8)
+    # em vez de socket.gethostbyname(socket.gethostname()), que no Linux
+    # frequentemente retorna 127.0.1.1 (entrada padrão em /etc/hosts).
     try:
-        import socket
-        local_ip = socket.gethostbyname(socket.gethostname())
+        from server.lan_discovery import get_local_ip
+        local_ip = get_local_ip()
         if local_ip and not local_ip.startswith("127."):
             _cors_origins_resolved.append(f"http://{local_ip}:5000")
             _cors_origins_resolved.append(f"http://{local_ip}")
@@ -209,7 +278,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins_resolved,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -225,7 +294,7 @@ from server.rest_rate_limit import rest_rate_limit_middleware, is_rate_limit_ena
 if is_rate_limit_enabled():
     app.middleware("http")(rest_rate_limit_middleware)
     logger.info(
-        "Rate limit REST ativado: %s req/%ds por IP",
+        "Rate limit REST ativado: %s req/%s por IP",
         os.getenv("REST_RATE_LIMIT_PER_MINUTE", "60"),
         os.getenv("REST_RATE_LIMIT_WINDOW", "60"),
     )
@@ -475,7 +544,8 @@ async def receive_federated_dm_endpoint(req: Request):
         ts = datetime.now(timezone.utc)
 
     with get_db() as db:
-        success, msg = receive_federated_dm(
+        # P0-FIX: receive_federated_dm agora é async — usa await direto
+        success, msg = await receive_federated_dm(
             db=db,
             sender_username=payload["sender_username"],
             sender_domain=payload["sender_domain"],
@@ -509,7 +579,8 @@ async def receive_federated_presence_endpoint(req: Request):
         return JSONResponse(status_code=400, content={"detail": "JSON inválido"})
 
     with get_db() as db:
-        success, msg = receive_federated_presence(
+        # P0-FIX: receive_federated_presence agora é async
+        success, msg = await receive_federated_presence(
             db=db,
             username=payload.get("username", ""),
             domain=payload.get("domain", ""),
@@ -527,15 +598,17 @@ async def receive_federated_presence_endpoint(req: Request):
 # #6: Endpoint de administração de backups
 # ---------------------------------------------------------------------------
 # Importa a dependência de autenticação para proteger endpoints admin.
-from server.api.dependencies import get_current_user as _get_current_user
+# P0-FIX: endpoints /api/admin/* agora exigem require_admin (is_admin=True no User)
+from server.api.dependencies import get_current_user as _get_current_user, require_admin as _require_admin
 
 
 @app.get("/api/admin/backups", tags=["admin"])
-async def list_backups_endpoint(current_user=Depends(_get_current_user)):
+async def list_backups_endpoint(current_user=Depends(_require_admin)):
     """
-    Lista backups existentes do SQLite. Requer autenticação.
-    Não há role admin ainda — qualquer usuário autenticado pode ver
-    (em produção, restringir a admin via flag no User).
+    Lista backups existentes do SQLite. Requer privilégios de administrador.
+
+    P0-FIX: antes, qualquer usuário autenticado podia ver backups (e até
+    forçar criação). Agora exige is_admin=True.
     """
     from server.backup import list_backups, is_backup_enabled
     return {
@@ -545,8 +618,13 @@ async def list_backups_endpoint(current_user=Depends(_get_current_user)):
 
 
 @app.post("/api/admin/backups/now", tags=["admin"])
-async def trigger_backup_now_endpoint(current_user=Depends(_get_current_user)):
-    """Força um backup imediato (além do agendamento). Requer autenticação."""
+async def trigger_backup_now_endpoint(current_user=Depends(_require_admin)):
+    """
+    Força um backup imediato (além do agendamento). Requer admin.
+
+    P0-FIX: antes este endpoint era aberto a qualquer usuário autenticado,
+    permitindo DoS de disco (chamar N vezes/segundo). Agora exige is_admin.
+    """
     from server.backup import perform_backup, is_backup_enabled
     if not is_backup_enabled():
         return JSONResponse(
@@ -589,10 +667,27 @@ rate_limiter = RateLimiter()
 app.state.rate_limiter = rate_limiter  # #4: expõe para healthcheck
 dispatcher = WebSocketDispatcher(manager, rate_limiter)
 
+# P0-FIX: guard de conexões não-autenticadas por IP — previne DoS via
+# milhares de conexões penduradas no timeout de auth (30s)
+from server.websocket.rate_limit import UnauthConnectionGuard
+unauth_guard = UnauthConnectionGuard()
+app.state.unauth_guard = unauth_guard
+
 # P2-1.2a: Registra o ConnectionManager no módulo de federação para que
 # DMs federadas recebidas sejam entregues via WebSocket ao destinatário.
 from server.federation import set_connection_manager
 set_connection_manager(manager)
+
+
+def _extract_client_ip(websocket: WebSocket) -> str:
+    """
+    Extrai IP do cliente WebSocket de forma segura.
+
+    T1-FIX: antes confiávamos cegamente em X-Forwarded-For, permitindo
+    spoofing. Agora só confiamos no header se veio de proxy confiável.
+    """
+    from server.security_ip import get_client_ip
+    return get_client_ip(websocket)
 
 
 @app.websocket("/ws")
@@ -601,7 +696,23 @@ async def websocket_endpoint(websocket: WebSocket):
     Rota WebSocket principal para comunicação real-time baseada em eventos.
     Lida com o ciclo de vida completo da conexão, autenticação, dispatching
     e atualização reativa de presença de usuários offline na desconexão.
+
+    P0-FIX: aplica UnauthConnectionGuard ANTES do accept — se o IP excedeu
+    o limite de conexões não-autenticadas, recusa com 1008 sem sequer
+    aceitar o socket (consome menos recursos).
     """
+    client_ip = _extract_client_ip(websocket)
+
+    # P0-FIX: rate limit de conexões não-autenticadas por IP
+    acquired = await unauth_guard.try_acquire(client_ip)
+    if not acquired:
+        logger.warning(
+            "WS rejeitada por limite de conexões não-autenticadas: IP=%s", client_ip,
+        )
+        # Fecha ANTES do accept com código 1008 (Policy Violation)
+        await websocket.close(code=1008, reason="Muitas conexões pendentes. Tente novamente.")
+        return
+
     await websocket.accept()
     authenticated_user_id = None
 
@@ -640,6 +751,9 @@ async def websocket_endpoint(websocket: WebSocket):
             exc_info=True,
         )
     finally:
+        # P0-FIX: libera o slot do guard de conexões não-autenticadas
+        await unauth_guard.release(client_ip)
+
         # Limpeza na desconexão do socket
         if authenticated_user_id:
             await manager.disconnect(authenticated_user_id)

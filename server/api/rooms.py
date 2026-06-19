@@ -1,6 +1,7 @@
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+# Optional já importado acima
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 from server.database.connection import get_db_api
@@ -145,12 +146,23 @@ def get_room_history(
     room_id: uuid.UUID,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    before_id: Optional[uuid.UUID] = Query(None, description="Cursor pagination: retorna mensagens anteriores a este ID"),
     db: Session = Depends(get_db_api),
     current_user: User = Depends(get_current_user),
 ):
     """
     Retorna o histórico paginado de mensagens enviadas para a sala informada.
     O usuário deve ser membro da sala para visualizar o histórico.
+
+    P1-FIX: suporta paginação por cursor via parâmetro `before_id`. Quando
+    fornecido, retorna mensagens com ID estritamente menor que before_id,
+    ordenadas da mais nova para a mais velha. Isto evita o problema de
+    paginação por offset em chats ativos: se novas mensagens chegam enquanto
+    o usuário rola o histórico, offset desliza e causa duplicação/skip.
+    Cursor pagination é estável independente de inserções concorrentes.
+
+    Mantemos `offset` para backward compatibility, mas `before_id` tem
+    precedência quando ambos são fornecidos.
     """
     # Valida se o usuário é membro da sala
     member = db.query(RoomMember).filter(
@@ -164,7 +176,32 @@ def get_room_history(
         )
 
     try:
-        messages = obter_historico_sala(db, room_id, limit, offset)
+        if before_id is not None:
+            # P1-FIX: cursor pagination via timestamp.
+            # Buscamos a mensagem com ID = before_id para obter seu timestamp,
+            # e retornamos mensagens com timestamp estritamente menor (ou
+            # igual com ID diferente, para evitar duplicação).
+            # Isto é estável mesmo com UUIDs v4 aleatórios — ordenamos por
+            # (timestamp DESC, id DESC) e filtramos por timestamp.
+            cursor_msg = db.query(Message).filter(Message.id == before_id).first()
+            if cursor_msg is None:
+                # ID de cursor inválido — retorna vazio (cliente deve resetar)
+                messages = []
+            else:
+                cursor_ts = cursor_msg.timestamp
+                messages = (
+                    db.query(Message)
+                    .filter(
+                        Message.room_id == room_id,
+                        Message.timestamp < cursor_ts,
+                    )
+                    .order_by(Message.timestamp.desc(), Message.id.desc())
+                    .limit(limit)
+                    .all()
+                )
+        else:
+            messages = obter_historico_sala(db, room_id, limit, offset)
+
         # FIX N+1: pré-carrega todos os senders em uma única query e monta um dict
         sender_ids = {m.sender_id for m in messages}
         sender_map: dict = {}

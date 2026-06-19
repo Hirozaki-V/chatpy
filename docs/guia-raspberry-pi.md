@@ -34,7 +34,8 @@ cd chatpy
 ### 3. Configurar
 
 ```bash
-# Gerar chave secreta
+# JWT_SECRET é auto-gerado se não configurado.
+# Para o Pi, recomendamos definir explicitamente:
 echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
 
 # Reduzir verbosidade de logs (economiza SD card)

@@ -19,7 +19,8 @@ curl -fsSL https://get.docker.com | sh
 git clone https://github.com/your-org/chatpy.git
 cd chatpy
 
-# Configurar segredos
+# JWT_SECRET é auto-gerado se não configurado.
+# Para produção, defina explicitamente:
 cat > .env << EOF
 JWT_SECRET=$(openssl rand -hex 32)
 CORS_ORIGINS=https://chatpy.seudominio.com
@@ -28,6 +29,8 @@ LOG_LEVEL=INFO
 LOG_FORMAT=json
 EOF
 ```
+
+> 💡 Se você não criar o `.env`, o servidor auto-gera o JWT_SECRET na primeira execução. Mas para produção, é recomendado definir explicitamente para controle.
 
 ### 3. Subir com Docker
 
@@ -114,10 +117,11 @@ python client-cli/main.py --host 192.168.1.50 --port 5000
 # Instalar dependências
 pip install -r requirements.txt
 
-# Configurar
+# JWT_SECRET é auto-gerado se não configurado — pode pular esta linha
+# Para definir explicitamente:
 export JWT_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
 
-# Rodar
+# Rodar (ou use ./iniciar.sh que faz tudo automaticamente)
 uvicorn server.main:app --host 0.0.0.0 --port 5000
 ```
 

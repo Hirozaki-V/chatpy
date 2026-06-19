@@ -34,6 +34,7 @@ vs_buildtools.exe
 # Certificados de segurança gerados localmente (NÃO devem ir pro repositório público por segurança!)
 *.key
 *.crt
+*.pem
 
 # Arquivos de configuração local
 config_local.json

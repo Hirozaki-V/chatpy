@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, ServerPeer
-from server.api.dependencies import get_current_user
+from server.api.dependencies import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/admin/peers", tags=["federation-admin"])
 
@@ -48,7 +48,7 @@ class DiscoverPeerRequest(BaseModel):
 @router.get("", response_model=List[ServerPeerResponse])
 def list_peers(
     db: Session = Depends(get_db_api),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """Lista todos os peers federados cadastrados."""
     peers = db.query(ServerPeer).order_by(ServerPeer.created_at.desc()).all()
@@ -59,7 +59,7 @@ def list_peers(
 def register_peer(
     req: RegisterPeerRequest,
     db: Session = Depends(get_db_api),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """
     Cadastra ou atualiza um peer federado.
@@ -107,7 +107,7 @@ def register_peer(
 def discover_peer(
     req: DiscoverPeerRequest,
     db: Session = Depends(get_db_api),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """
     Descobre um peer via /.well-known/chatpy.json e cadastra automaticamente.
@@ -166,7 +166,7 @@ def discover_peer(
 def toggle_peer_active(
     peer_id: uuid.UUID,
     db: Session = Depends(get_db_api),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """Ativa ou desativa um peer (sem deletar)."""
     peer = db.query(ServerPeer).filter(ServerPeer.id == peer_id).first()
@@ -182,7 +182,7 @@ def toggle_peer_active(
 def delete_peer(
     peer_id: uuid.UUID,
     db: Session = Depends(get_db_api),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """Remove permanentemente um peer."""
     peer = db.query(ServerPeer).filter(ServerPeer.id == peer_id).first()

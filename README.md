@@ -16,19 +16,31 @@ ChatPy é um chat que **você hospeda** — no seu PC, num Raspberry Pi, num ser
 
 ## Início rápido (3 comandos)
 
+### Com Docker
 ```bash
-# 1. Clone o repositório
 git clone https://github.com/your-org/chatpy.git
 cd chatpy
-
-# 2. Configure o segredo JWT
-echo 'JWT_SECRET=minha-chave-super-secreta-aleatoria-12345678' > .env
-
-# 3. Suba o servidor
 docker compose up -d
 ```
+Pronto! JWT_SECRET é auto-gerado na primeira execução.
 
-Servidor rodando em `http://localhost:5000`. Pronto!
+### Sem Docker (mais fácil)
+```bash
+git clone https://github.com/your-org/chatpy.git
+cd chatpy
+python setup.py
+```
+O setup interativo instala tudo, configura e inicia o servidor.
+
+### Windows (zero terminal)
+1. Baixe o projeto
+2. Duplo clique em **`iniciar.bat`**
+3. Tudo é configurado automaticamente
+
+### Linux/Mac (um comando)
+```bash
+./iniciar.sh
+```
 
 ## Usar o chat
 

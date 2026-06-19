@@ -10,6 +10,7 @@ O Double Ratchet em si (derivação de chaves por mensagem) fica no cliente
 — o servidor só armazena chaves públicas e ciphertexts.
 """
 import uuid
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -17,6 +18,8 @@ from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, UserIdentityKey, OneTimePreKey
 from server.api.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/keys", tags=["e2e-encryption"])
 
@@ -127,20 +130,62 @@ def get_user_keys(
             detail=f"Usuário '{username}' não publicou chaves E2E ainda.",
         )
 
-    # Consome uma One-Time PreKey não usada
-    otpk = db.query(OneTimePreKey).filter(
-        OneTimePreKey.user_id == target.id,
-        OneTimePreKey.used == False,
-    ).order_by(OneTimePreKey.key_id.asc()).first()
-
+    # Consome uma One-Time PreKey não usada.
+    # P0-FIX: usa UPDATE ... RETURNING atômico para evitar race condition
+    # onde dois clientes fazendo X3DH simultâneo recebiam a MESMA prekey.
+    # O SQLAlchemy com SQLite não suporta SELECT FOR UPDATE (sem efeito),
+    # mas um UPDATE atômico com WHERE used=False garante que só um cliente
+    # consome cada prekey — o segundo cliente recebe rowcount=0 e pega outra.
+    from sqlalchemy import update, text
     one_time_prekey = None
-    if otpk:
-        otpk.used = True  # marca como consumida
-        db.commit()
-        one_time_prekey = PreKeyResponse(
-            key_id=otpk.key_id,
-            public_key_pem=otpk.public_key_pem,
+
+    # Tenta consumir a prekey com menor key_id atomicamente
+    # PostgreSQL suporta RETURNING; SQLite 3.35+ também.
+    try:
+        result = db.execute(
+            update(OneTimePreKey)
+            .where(
+                OneTimePreKey.user_id == target.id,
+                OneTimePreKey.used == False,
+            )
+            .values(used=True)
+            .returning(OneTimePreKey.id, OneTimePreKey.key_id, OneTimePreKey.public_key_pem)
+            .order_by(OneTimePreKey.key_id.asc())
+            .limit(1)
         )
+        row = result.first()
+        if row:
+            one_time_prekey = PreKeyResponse(
+                key_id=row.key_id,
+                public_key_pem=row.public_key_pem,
+            )
+            db.commit()
+        else:
+            db.rollback()
+    except Exception as e:
+        # Fallback: se RETURNING não for suportado (SQLite < 3.35), usa
+        # o approach anterior com retry otimista. Isto NÃO é 100% seguro
+        # contra races mas preserva compatibilidade.
+        logger.warning("RETURNING não suportado, fallback para SELECT+UPDATE: %s", e)
+        db.rollback()
+        otpk = db.query(OneTimePreKey).filter(
+            OneTimePreKey.user_id == target.id,
+            OneTimePreKey.used == False,
+        ).order_by(OneTimePreKey.key_id.asc()).first()
+
+        if otpk:
+            # Re-checa used antes de marcar (race window)
+            db.refresh(otpk, ["used"])
+            if otpk.used:
+                # Já foi consumida por outra transação — aborta
+                db.rollback()
+            else:
+                otpk.used = True
+                db.commit()
+                one_time_prekey = PreKeyResponse(
+                    key_id=otpk.key_id,
+                    public_key_pem=otpk.public_key_pem,
+                )
 
     return UserKeysResponse(
         user_id=str(target.id),

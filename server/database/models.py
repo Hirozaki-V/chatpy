@@ -52,6 +52,12 @@ class User(Base):
     is_guest = Column(Boolean, default=False, nullable=False, index=True)
     # expires_at: para guests, timestamp de expiração; para usuários normais, NULL.
     expires_at = Column(DateTime, nullable=True, index=True)
+    # P0-FIX: flag de admin — protege endpoints /api/admin/* (peers federados,
+    # backups, etc). Antes, qualquer usuário autenticado podia cadastrar peers
+    # maliciosos, deletar todos os peers, ou forçar backups a cada segundo
+    # (DoS de disco). Default False; o setup.py marca o primeiro usuário
+    # criado como admin automaticamente.
+    is_admin = Column(Boolean, default=False, nullable=False, index=True)
 
     # Relacionamentos
     memberships = relationship("RoomMember", back_populates="user", cascade="all, delete-orphan")
@@ -106,6 +112,15 @@ class PrivateMessage(Base):
     receiver_id = Column(GUID, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    # P0-FIX: Para DMs federadas, o sender não é um User local. Antes este
+    # campo era setado como receiver.id (corrompendo o sentido da FK e
+    # quebrando o payload WebSocket enviado ao destinatário). Agora mantemos
+    # sender_id apontando para o receiver local (placeholder, não é usado
+    # para nada além de satisfazer a NOT NULL constraint) e guardamos o
+    # remetente federado real neste campo textual (ex: "@bob@outro.com").
+    # Clientes devem checar `federated_sender`: se presente, usar como
+    # nome de exibição do remetente em vez de consultar sender_id.
+    federated_sender = Column(String(255), nullable=True, index=True)
 
     # Relacionamentos
     sender = relationship("User", foreign_keys=[sender_id])
