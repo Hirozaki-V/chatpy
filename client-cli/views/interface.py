@@ -209,7 +209,7 @@ def create_chat_layout(
     prompt_text = Text.assemble(
         (f"[{active_tab}] > ", colors["prompt_arrow"]),
         (current_input, colors["input_text"]),
-        (f"█", colors["cursor"]),  # Cursor simulado
+        ("█", colors["cursor"]),  # Cursor simulado
     )
     layout["footer"].update(prompt_text)
 

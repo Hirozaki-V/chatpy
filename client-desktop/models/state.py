@@ -224,6 +224,8 @@ class ClientState:
         
         # Notificações detalhadas adicionais
         self.pending_friend_requests: List[Dict[str, Any]] = []
+        # Priority 3: reações (emoji) em mensagens: {message_id: {emoji: [usernames]}}
+        self.message_reactions: Dict[str, Dict[str, List[str]]] = {}
         
         # Cache de anexos: uuid -> (bytes, mime_type)
         # T5-FIX: agora é LRUAttachmentCache com limite de bytes e entradas.

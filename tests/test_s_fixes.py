@@ -28,7 +28,7 @@ class TestDesktopUploadStreaming(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         # Verifica que o método streaming é chamado
         self.assertIn("upload_attachment_streaming", content)
@@ -66,7 +66,7 @@ class TestBackgroundJobsConfigurable(unittest.TestCase):
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "server", "main.py"
         )
-        with open(main_path, "r") as f:
+        with open(main_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("ATTACHMENT_CLEANUP_INTERVAL_SECONDS", content)
 
@@ -75,7 +75,7 @@ class TestBackgroundJobsConfigurable(unittest.TestCase):
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "server", "main.py"
         )
-        with open(main_path, "r") as f:
+        with open(main_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("GUEST_CLEANUP_INTERVAL_SECONDS", content)
 
@@ -84,7 +84,7 @@ class TestBackgroundJobsConfigurable(unittest.TestCase):
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "server", "main.py"
         )
-        with open(main_path, "r") as f:
+        with open(main_path, "r", encoding="utf-8") as f:
             content = f.read()
         # Default deve ser "3600" para manter compatibilidade
         self.assertIn('"3600"', content)
@@ -98,7 +98,7 @@ class TestErrorMiddlewareGranular(unittest.TestCase):
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "server", "main.py"
         )
-        with open(main_path, "r") as f:
+        with open(main_path, "r", encoding="utf-8") as f:
             content = f.read()
         # Verifica que os tipos são tratados
         self.assertIn("HTTPException", content)
@@ -110,7 +110,7 @@ class TestErrorMiddlewareGranular(unittest.TestCase):
         main_path = os.path.join(
             os.path.dirname(__file__), "..", "server", "main.py"
         )
-        with open(main_path, "r") as f:
+        with open(main_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("LOG_LEVEL", content)
         self.assertIn("DEBUG", content)
@@ -124,7 +124,7 @@ class TestCLITutorial(unittest.TestCase):
         cli_path = os.path.join(
             os.path.dirname(__file__), "..", "client-cli", "main.py"
         )
-        with open(cli_path, "r") as f:
+        with open(cli_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn('cmd == "/tutorial"', content)
         self.assertIn("TUTORIAL DO CHATPY", content)
@@ -134,7 +134,7 @@ class TestCLITutorial(unittest.TestCase):
         cli_path = os.path.join(
             os.path.dirname(__file__), "..", "client-cli", "main.py"
         )
-        with open(cli_path, "r") as f:
+        with open(cli_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("/tutorial", content)
 
@@ -143,7 +143,7 @@ class TestCLITutorial(unittest.TestCase):
         cli_path = os.path.join(
             os.path.dirname(__file__), "..", "client-cli", "main.py"
         )
-        with open(cli_path, "r") as f:
+        with open(cli_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("Bem-vindo ao ChatPy", content)
         self.assertIn("/tutorial", content)
@@ -165,7 +165,7 @@ class TestDesktopHasFederationDialog(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("FederationPeersDialog", content)
         self.assertIn("_handle_federation_peers", content)

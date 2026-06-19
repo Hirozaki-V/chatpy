@@ -32,6 +32,8 @@ class EventType(str, Enum):
     # P1-3: broadcast de "digitando..." — servidor retransmite para membros
     # da sala ou para o destinatário da DM.
     USER_TYPING_BROADCAST = "user.typing_broadcast"
+    # Priority 3: reação (emoji) em mensagem — servidor retransmite para membros da sala
+    MESSAGE_REACTION = "message.reaction"
     # Q5-FIX: heartbeat ping/pong customizado (Starlette WS não tem .ping())
     PING = "ping"  # server -> client
     PONG = "pong"  # client -> server (resposta ao ping)

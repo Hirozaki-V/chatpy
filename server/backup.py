@@ -90,9 +90,16 @@ def perform_backup() -> bool:
         # #6: Usa VACUUM INTO do SQLite — copia o banco de forma consistente
         # sem precisar bloquear writes. Funciona mesmo com o servidor rodando.
         # Fallback: se VACUUM INTO falhar (SQLite < 3.27), usa shutil.copy2.
+        # SECURITY: valida que backup_path não contém caracteres perigosos
+        # antes de usar na string SQL (f-string com path era vulnerável a injection).
+        import re as _re_backup
+        safe_path = os.path.abspath(backup_path)
+        if not safe_path.endswith(".db") or _re_backup.search(r"[;'\"]", safe_path):
+            logger.error("Backup path rejeitado por caracteres inseguros: %s", backup_path)
+            return False
         try:
             conn = sqlite3.connect(db_path)
-            conn.execute(f"VACUUM INTO '{backup_path}'")
+            conn.execute("VACUUM INTO ?", (safe_path,))
             conn.close()
             logger.info("Backup criado via VACUUM INTO: %s", backup_path)
         except sqlite3.OperationalError as e:
@@ -101,7 +108,7 @@ def perform_backup() -> bool:
                 "VACUUM INTO falhou (%s), usando shutil.copy2 (pode ter inconsistência)",
                 e,
             )
-            shutil.copy2(db_path, backup_path)
+            shutil.copy2(db_path, safe_path)
             logger.info("Backup criado via shutil.copy2: %s", backup_path)
 
         # Rotaciona backups antigos
@@ -111,9 +118,9 @@ def perform_backup() -> bool:
     except Exception as e:
         logger.error("Erro ao criar backup: %s", e)
         # Remove backup parcial se houver
-        if os.path.exists(backup_path):
+        if os.path.exists(safe_path):
             try:
-                os.remove(backup_path)
+                os.remove(safe_path)
             except OSError:
                 pass
         return False

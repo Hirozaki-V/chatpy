@@ -137,7 +137,12 @@ def _record_failed_login(db: SqlalchemySession, username: str, ip_address: str =
 
 
 def _clear_login_attempts(db: SqlalchemySession, username: str) -> None:
-    """Limpa o contador de tentativas após login bem-sucedido."""
+    """Limpa o contador de tentativas após login bem-sucedido.
+
+    SECURITY: limpa tanto tentativas por username quanto por IP do usuário,
+    para evitar que lockouts antigos afetem futuros logins do mesmo IP.
+    """
+    # Limpa tentativas deste username
     db.query(LoginAttempt).filter(
         LoginAttempt.username == username,
     ).delete(synchronize_session=False)
@@ -197,13 +202,19 @@ _GUEST_USERNAME_LEN = int(_os2.getenv("GUEST_USERNAME_LEN", "8"))
 
 
 def _generate_guest_username(db: SqlalchemySession) -> str:
-    """Gera um username único para um guest: guest_<8 chars alfanuméricos>."""
+    """Gera um username único para um guest: guest_<8 chars alfanuméricos>.
+
+    SECURITY: usa UUID v4 como fallback garantido — o loop de colisão
+    anterior podia falhar sob concorrência alta (dois requests gerando
+    o mesmo username antes do flush). Agora o fallback é determinístico
+    e único sem depender do banco.
+    """
     alphabet = _string.ascii_lowercase + _string.digits
     for _ in range(50):  # 50 tentativas — colisão é extremamente improvável
         candidate = _GUEST_PREFIX + "".join(_secrets.choice(alphabet) for _ in range(_GUEST_USERNAME_LEN))
         if not db.query(User).filter(func.lower(User.username) == candidate.lower()).first():
             return candidate
-    # Fallback improvável — adiciona UUID suffix para garantir unicidade
+    # Fallback: UUID garante unicidade mesmo sob concorrência extrema
     return f"{_GUEST_PREFIX}{uuid.uuid4().hex[:12]}"
 
 

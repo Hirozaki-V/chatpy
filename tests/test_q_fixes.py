@@ -293,7 +293,7 @@ class TestSystemTrayExists(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("QSystemTrayIcon", content)
         self.assertIn("tray_icon", content)

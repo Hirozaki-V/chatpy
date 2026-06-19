@@ -415,7 +415,8 @@ class LoginDialog(QDialog):
             def run(self):
                 try:
                     # Importa o módulo de descoberta (opcional — pode não ter zeroconf)
-                    import sys, os
+                    import sys
+                    import os
                     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
                     from server.lan_discovery import discover_servers, is_lan_discovery_enabled
                     if not is_lan_discovery_enabled():

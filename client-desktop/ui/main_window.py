@@ -237,6 +237,11 @@ class MainWindow(QMainWindow):
         federation_action = rooms_menu.addAction("Federação — Servidores Peer...")
         federation_action.triggered.connect(self._handle_federation_peers)
 
+        # Priority 3: Busca de mensagens
+        search_action = rooms_menu.addAction("Buscar Mensagens...")
+        search_action.setShortcut(QKeySequence("Ctrl+F"))
+        search_action.triggered.connect(self._handle_search_messages)
+
         view_menu = menu_bar.addMenu("EXIBIR")
         theme_menu = view_menu.addMenu("Tema")
 
@@ -609,9 +614,9 @@ class MainWindow(QMainWindow):
             "Anexos são limitados a 10 MB e validados por tipo MIME no servidor.",
         ]
         for tip in tips:
-            l = QLabel("• " + tip)
-            l.setWordWrap(True)
-            layout.addWidget(l)
+            tip_label = QLabel("• " + tip)
+            tip_label.setWordWrap(True)
+            layout.addWidget(tip_label)
         btn = QPushButton("FECHAR")
         btn.clicked.connect(dlg.accept)
         layout.addWidget(btn)
@@ -654,6 +659,32 @@ class MainWindow(QMainWindow):
         """#9: Abre diálogo de administração de peers federados."""
         dlg = FederationPeersDialog(self.controller, self)
         dlg.exec()
+
+    def _handle_search_messages(self):
+        """Priority 3: busca de mensagens em todas as salas do usuário."""
+        from PySide6.QtWidgets import QInputDialog
+        query, ok = QInputDialog.getText(self, "Buscar Mensagens", "Digite o termo de busca:")
+        if not ok or not query.strip():
+            return
+        try:
+            results = self.controller.service.api.search_messages(
+                self.controller.state.token, query.strip()
+            )
+            if not results:
+                QMessageBox.information(self, "Busca", f"Nenhuma mensagem encontrada para '{query}'.")
+                return
+            # Mostra resultados em um dialog simples
+            lines = []
+            for r in results[:50]:  # limita a 50 para não sobrecarregar
+                t = datetime.fromisoformat(r["timestamp"]).strftime("%d/%m %H:%M")
+                sender = html.escape(r["sender_name"])
+                content = html.escape(r["content"])[:100]
+                room = html.escape(r.get("room_name", "?"))
+                lines.append(f"[{t}] #{room} &lt;{sender}&gt; {content}")
+            result_text = f"{len(results)} resultado(s) para '{query}':\n\n" + "\n".join(lines)
+            QMessageBox.information(self, "Resultados da Busca", result_text)
+        except Exception as e:
+            QMessageBox.warning(self, "Erro", f"Falha ao buscar: {e}")
 
     def _handle_add_friend(self):
         username, ok = QInputDialog.getText(self, "Adicionar Amigo", "Digite o apelido do usuário:")
@@ -1017,7 +1048,7 @@ class MainWindow(QMainWindow):
                     )
                 else:
                     download_link = (
-                        f'<br/><span style="color: gray;">[Anexo inválido]</span><br/>'
+                        '<br/><span style="color: gray;">[Anexo inválido]</span><br/>'
                     )
 
                 if mime_type.startswith("image/") and att_id:

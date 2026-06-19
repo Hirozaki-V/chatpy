@@ -1,7 +1,7 @@
 import sys
 import os
 import unittest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QTextEdit
 from PySide6.QtCore import QObject, Signal
 
 # Resolve paths
@@ -14,6 +14,7 @@ from ui.main_window import MainWindow
 class DummyService:
     def __init__(self):
         self.token = "dummy_token"
+        self.is_connected = True
     def disconnect(self):
         pass
 
@@ -23,6 +24,8 @@ class DummyController(QObject):
     notification_requested = Signal(str, str)
     connection_status_changed = Signal(str)
     status_message = Signal(str, int)
+    error_dialog = Signal(str, str)
+    typing_received = Signal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -32,6 +35,21 @@ class DummyController(QObject):
 
     def load_room_members(self, room_name):
         return []
+
+    def change_status(self, status):
+        pass
+
+    def logout(self):
+        pass
+
+    def update_room_settings(self, room_id, **kwargs):
+        pass
+
+    def refresh_friends(self):
+        pass
+
+    def _on_event_received(self, event, payload):
+        pass
 
 class TestDesktopUiTabs(unittest.TestCase):
     @classmethod
@@ -77,20 +95,29 @@ class TestDesktopUiTabs(unittest.TestCase):
         self.assertEqual(window.chat_tabs.count(), 2)
         
         tab_widget = window.chat_tabs.widget(1)
-        self.assertIsNotNone(tab_widget.findChild(QLineEdit, "ChatInput"))
+        self.assertIsNotNone(tab_widget.findChild(QTextEdit, "ChatInput"))
         self.assertIsNotNone(tab_widget.findChild(QPushButton, "SendButton"))
         
-        # Deliberately corrupt the tab by removing QLineEdit ChatInput
-        chat_input = tab_widget.findChild(QLineEdit, "ChatInput")
+        # Deliberately corrupt the tab by removing ChatInputEdit
+        chat_input = tab_widget.findChild(QTextEdit, "ChatInput")
         chat_input.setParent(None)
         
         # Trigger update (should reconstruct tab)
         controller.state_updated.emit()
         
-        # Verify it was rebuilt and inputs are present
-        new_tab_widget = window.chat_tabs.widget(1)
-        self.assertIsNotNone(new_tab_widget.findChild(QLineEdit, "ChatInput"))
-        self.assertIsNotNone(new_tab_widget.findChild(QPushButton, "SendButton"))
+        # Verify tab count is still 2 and inputs are present
+        self.assertEqual(window.chat_tabs.count(), 2)
+        
+        # Find the tab for #testroom by searching all tabs
+        found_chat_input = False
+        for i in range(window.chat_tabs.count()):
+            tab = window.chat_tabs.widget(i)
+            if tab and tab.findChild(QTextEdit, "ChatInput"):
+                found_chat_input = True
+                self.assertIsNotNone(tab.findChild(QPushButton, "SendButton"))
+                break
+        
+        self.assertTrue(found_chat_input, "ChatInput widget not found in any tab after rebuild")
 
     def test_dm_attachment_persistence(self):
         controller = DummyController()

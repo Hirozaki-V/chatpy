@@ -4,6 +4,7 @@ from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Inte
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.types import TypeDecorator, CHAR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import UniqueConstraint
 
 Base = declarative_base()
 
@@ -103,6 +104,29 @@ class Message(Base):
     room = relationship("Room", back_populates="messages")
     sender = relationship("User")
     attachment = relationship("Attachment", back_populates="message", uselist=False, cascade="all, delete-orphan")
+    reactions = relationship("MessageReaction", back_populates="message", cascade="all, delete-orphan")
+
+
+class MessageReaction(Base):
+    """
+    Reações (emoji) em mensagens.
+    Cada linha representa um usuário reagindo com um emoji a uma mensagem.
+    UniqueConstraint em (message_id, user_id, emoji) previne race conditions.
+    """
+    __tablename__ = "message_reactions"
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", "emoji", name="uq_reaction_per_user"),
+    )
+
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    message_id = Column(GUID, ForeignKey("messages.id"), nullable=False, index=True)
+    user_id = Column(GUID, ForeignKey("users.id"), nullable=False, index=True)
+    emoji = Column(String(10), nullable=False)  # ex: "❤️", "👍", "😂"
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    # Relacionamentos
+    message = relationship("Message", back_populates="reactions")
+    user = relationship("User")
 
 class PrivateMessage(Base):
     __tablename__ = "private_messages"

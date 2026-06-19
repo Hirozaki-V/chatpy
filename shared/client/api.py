@@ -440,6 +440,52 @@ class ApiClient:
             return res.json()
         return []
 
+    def search_messages(self, token: str, query: str, limit: int = 20, before_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Busca mensagens em todas as salas que o usuário é membro. Suporta paginação por cursor."""
+        url = f"{self.base_url}/api/rooms/search"
+        payload = {"query": query, "limit": limit}
+        if before_id:
+            payload["before_id"] = before_id
+        try:
+            res = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers(token),
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+        if res.status_code == 200:
+            return res.json()
+        raise ValueError(self._safe_json(res, "Erro ao buscar mensagens."))
+
+    def toggle_reaction(self, token: str, room_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
+        """Adiciona ou remove uma reação (emoji) de uma mensagem (toggle)."""
+        url = f"{self.base_url}/api/rooms/{room_id}/messages/{message_id}/reactions"
+        try:
+            res = httpx.post(
+                url,
+                json={"emoji": emoji},
+                headers=self._headers(token),
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as e:
+            raise ValueError(f"Erro de conexão: {e}")
+        if res.status_code == 200:
+            return res.json()
+        raise ValueError(self._safe_json(res, "Erro ao reagir à mensagem."))
+
+    def get_reactions(self, token: str, room_id: str, message_id: str) -> Dict[str, Any]:
+        """Retorna todas as reações de uma mensagem agrupadas por emoji."""
+        url = f"{self.base_url}/api/rooms/{room_id}/messages/{message_id}/reactions"
+        try:
+            res = httpx.get(url, headers=self._headers(token), timeout=self._timeout)
+        except httpx.RequestError:
+            return {"reactions": {}}
+        if res.status_code == 200:
+            return res.json()
+        return {"reactions": {}}
+
     def health(self) -> Dict[str, Any]:
         """Verifica o status do servidor (healthcheck)."""
         url = f"{self.base_url}/health"

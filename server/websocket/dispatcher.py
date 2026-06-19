@@ -170,6 +170,10 @@ class WebSocketDispatcher:
                 # P1-3: indicador de digitação — servidor retransmite
                 await self._handle_user_typing(authenticated_user_id, frame.payload)
 
+            elif event == EventType.MESSAGE_REACTION:
+                # Priority 3: reação em mensagem — servidor retransmite para membros
+                await self._handle_reaction(authenticated_user_id, frame.payload)
+
             elif event == EventType.MESSAGE_SEND_FEDERATED:
                 # P2-1.2d: DM federada — encaminha para servidor peer remoto
                 await self._handle_send_federated(authenticated_user_id, frame.payload)
@@ -884,6 +888,24 @@ class WebSocketDispatcher:
             )
             return
 
+        # SECURITY: valida formato de receiver_user e receiver_domain
+        # para prevenir injeção de caracteres especiais. Mesma regex usada
+        # pelo endpoint REST em /api/federation/dm.
+        import re as _re_fed
+        _SAFE_RE = _re_fed.compile(r"^[a-zA-Z0-9_.-]+$")
+        if not _SAFE_RE.match(receiver_user) or not _SAFE_RE.match(receiver_domain):
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {
+                        "code": 400,
+                        "message": "Username ou domínio federado contém caracteres inválidos.",
+                    },
+                },
+                user_id,
+            )
+            return
+
         # Busca peer pelo domínio
         def db_find_peer():
             with get_db() as db:
@@ -947,3 +969,95 @@ class WebSocketDispatcher:
                 },
                 user_id,
             )
+
+    async def _handle_reaction(self, user_id: UUID, payload_data: dict):
+        """
+        Priority 3: Processa reação (emoji) em mensagem.
+
+        Valida o payload, persiste no banco (toggle), e retransmite
+        o evento para todos os membros da sala em tempo real.
+        """
+        try:
+            payload = parse_payload(EventType.MESSAGE_REACTION, payload_data)
+        except Exception as e:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": f"Payload inválido: {e}"},
+                },
+                user_id,
+            )
+            return
+
+        def db_toggle_reaction():
+            with get_db() as db:
+                member = db.query(RoomMember).filter(
+                    RoomMember.room_id == payload.room_id,
+                    RoomMember.user_id == user_id,
+                    RoomMember.is_banned == False,
+                ).first()
+                if not member:
+                    return None, "Você não é membro desta sala."
+
+                from server.database.models import Message, MessageReaction
+                message = db.query(Message).filter(
+                    Message.id == payload.message_id,
+                    Message.room_id == payload.room_id,
+                ).first()
+                if not message:
+                    return None, "Mensagem não encontrada."
+
+                existing = db.query(MessageReaction).filter(
+                    MessageReaction.message_id == payload.message_id,
+                    MessageReaction.user_id == user_id,
+                    MessageReaction.emoji == payload.emoji,
+                ).first()
+
+                if existing:
+                    db.delete(existing)
+                    action = "removed"
+                else:
+                    reaction = MessageReaction(
+                        message_id=payload.message_id,
+                        user_id=user_id,
+                        emoji=payload.emoji,
+                    )
+                    db.add(reaction)
+                    action = "added"
+
+                db.flush()
+
+                members = db.query(RoomMember.user_id).filter(
+                    RoomMember.room_id == payload.room_id,
+                    RoomMember.is_banned == False,
+                ).all()
+                member_ids = [m[0] for m in members]
+
+                return (action, member_ids), None
+
+        result, err = await asyncio.to_thread(db_toggle_reaction)
+        if err:
+            await self.manager.send_personal_message(
+                {
+                    "event": EventType.ERROR_ALERT.value,
+                    "payload": {"code": 400, "message": err},
+                },
+                user_id,
+            )
+            return
+
+        action, member_ids = result
+        username = self.manager.user_names.get(user_id, "Desconhecido")
+
+        reaction_frame = {
+            "event": EventType.MESSAGE_REACTION.value,
+            "payload": {
+                "message_id": str(payload.message_id),
+                "room_id": str(payload.room_id),
+                "user_id": str(user_id),
+                "username": username,
+                "emoji": payload.emoji,
+                "action": action,
+            },
+        }
+        await self.manager.broadcast_to_users(reaction_frame, member_ids)

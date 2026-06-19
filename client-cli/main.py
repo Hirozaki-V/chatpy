@@ -542,6 +542,39 @@ def _resolve_user_uuid(api: ApiClient, username: str) -> Optional[str]:
     return None
 
 
+def _resolve_invite_id(api: ApiClient, target: str) -> Optional[str]:
+    """
+    Resolve um alvo de /accept ou /reject para o UUID da solicitação de amizade.
+    Aceita:
+      - Índice numérico (0, 1, 2...) da lista de /invites
+      - Username do remetente da solicitação
+    Retorna o UUID da solicitação pendente, ou None se não encontrar.
+    """
+    # 1. Tenta como índice numérico
+    try:
+        idx = int(target)
+        invites = api.get_pending_friend_requests(state.token)
+        if 0 <= idx < len(invites):
+            return invites[idx]["id"]
+    except ValueError:
+        pass
+    except Exception:
+        pass
+
+    # 2. Tenta como username
+    # Busca solicitações pendentes e procura pelo username
+    try:
+        invites = api.get_pending_friend_requests(state.token)
+        target_lower = target.lstrip("@").lower()
+        for inv in invites:
+            if inv.get("username", "").lower() == target_lower:
+                return inv["id"]
+    except Exception:
+        pass
+
+    return None
+
+
 async def _confirm_destructive(action_desc: str) -> bool:
     """
     P0-FIX: prompt de confirmação Y/n para comandos destrutivos.
@@ -577,8 +610,8 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /users                   - Listar usuários online\n"
             "  /invites                 - Ver solicitações de amizade pendentes\n"
             "  /invite username         - Enviar solicitação de amizade\n"
-            "  /accept sender_id        - Aceitar solicitação de amizade\n"
-            "  /reject sender_id        - Rejeitar solicitação de amizade\n"
+            "  /accept <user|índice>    - Aceitar solicitação de amizade\n"
+            "  /reject <user|índice>    - Rejeitar solicitação de amizade\n"
             "  /friends                 - Listar seus amigos\n"
             "  /notifications           - Ver histórico de notificações (DMs e amizades aceitas)\n"
             "  /unfriend username       - Remover amizade\n"
@@ -597,6 +630,8 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "  /download <id> [caminho] - Baixar anexo do servidor\n"
             "  /upload <caminho>        - Enviar arquivo como anexo\n"
             "  /whoami                  - Ver seu perfil (username, status, is_admin, is_guest)\n"
+            "  /search <termo>          - Buscar mensagens em todas as suas salas\n"
+            "  /react <id> <emoji>     - Reagir a uma mensagem (toggle)\n"
             "  /history more            - Carregar mensagens mais antigas da sala ativa\n"
             "  /peers                   - Listar peers federados (requer admin)\n"
             "  /promote_admin <user>    - Promover usuário a admin (requer admin)\n"
@@ -634,7 +669,7 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             "   • /query @username        — abre aba de DM com alguém\n"
             "   • /invite username        — envia solicitação de amizade\n"
             "   • /invites                — vê solicitações pendentes\n"
-            "   • /accept sender_id       — aceita solicitação\n"
+            "   • /accept user ou 0       — aceita solicitação\n"
             "   • /friends                — lista seus amigos\n"
             "\n"
             "4️⃣  ARQUIVOS\n"
@@ -916,9 +951,18 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
 
     elif cmd == "/accept":
         if len(parts) < 2:
-            state.messages[state.active_tab].append("[Sistema] Uso: /accept invite_uuid")
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /accept <username|índice>\n"
+                "  Use /invites para ver as solicitações pendentes."
+            )
             return
-        invite_id = parts[1]
+        target = parts[1]
+        invite_id = _resolve_invite_id(api, target)
+        if not invite_id:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Não foi possível resolver '{target}'. Use /invites para ver IDs."
+            )
+            return
         try:
             api.accept_friend_request(state.token, invite_id)
             state.messages[state.active_tab].append("[Sistema] Solicitação de amizade aceita.")
@@ -927,9 +971,18 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
 
     elif cmd == "/reject":
         if len(parts) < 2:
-            state.messages[state.active_tab].append("[Sistema] Uso: /reject invite_uuid")
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /reject <username|índice>\n"
+                "  Use /invites para ver as solicitações pendentes."
+            )
             return
-        invite_id = parts[1]
+        target = parts[1]
+        invite_id = _resolve_invite_id(api, target)
+        if not invite_id:
+            state.messages[state.active_tab].append(
+                f"[Sistema] Não foi possível resolver '{target}'. Use /invites para ver IDs."
+            )
+            return
         try:
             api.reject_friend_request(state.token, invite_id)
             state.messages[state.active_tab].append("[Sistema] Solicitação de amizade rejeitada.")
@@ -1421,6 +1474,84 @@ async def process_user_command(command_line: str, api: ApiClient, ws: WebSocketC
             state.messages[state.active_tab].append(
                 f"[Sistema] {len(history)} mensagens antigas carregadas."
             )
+        except Exception as e:
+            state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/search":
+        # Busca de mensagens em todas as salas que o usuário é membro.
+        if len(parts) < 2:
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /search <termo>\n"
+                "  Busca mensagens em todas as suas salas."
+            )
+            return
+        query = " ".join(parts[1:])
+        try:
+            results = api.search_messages(state.token, query)
+            if not results:
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Nenhuma mensagem encontrada para '{query}'."
+                )
+                return
+            res_str = f"[Sistema] {len(results)} resultado(s) para '{query}':\n"
+            for r in results:
+                t = datetime.fromisoformat(r["timestamp"]).strftime("%d/%m %H:%M")
+                sender = _sanitize_text(r["sender_name"])
+                content = _sanitize_text(r["content"])[:120]
+                room = r.get("room_name", "?")
+                # Destaca o termo buscado no conteúdo (case-insensitive)
+                import re as _re_search
+                highlighted = _re_search.sub(
+                    lambda m: f">>>{m.group()}<<<",
+                    content,
+                    flags=_re_search.IGNORECASE,
+                )
+                res_str += f"  [{t}] #{room} <{sender}> {highlighted}\n"
+            state.messages[state.active_tab].append(res_str.rstrip())
+        except Exception as e:
+            state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
+
+    elif cmd == "/react":
+        # Reação (emoji) a uma mensagem.
+        # Uso: /react <message_id> <emoji>
+        if len(parts) < 3:
+            state.messages[state.active_tab].append(
+                "[Sistema] Uso: /react <message_id> <emoji>\n"
+                "  Ex: /react abc123 👍\n"
+                "  Reage com toggle (se já reagiu, remove a reação)."
+            )
+            return
+        msg_id = parts[1]
+        emoji = parts[2]
+        if not state.active_tab.startswith("#"):
+            state.messages[state.active_tab].append("[Sistema] /react só funciona em salas.")
+            return
+        room_uuid = state.room_uuid_map.get(state.active_tab)
+        if not room_uuid:
+            state.messages[state.active_tab].append("[Sistema] Sala não mapeada.")
+            return
+        try:
+            result = api.toggle_reaction(state.token, room_uuid, msg_id, emoji)
+            action = "adicionada" if result.get("status") == "added" else "removida"
+
+            # Mostra contagem de reações da mensagem
+            try:
+                reactions_data = api.get_reactions(state.token, room_uuid, msg_id)
+                grouped = reactions_data.get("reactions", {})
+                if grouped:
+                    counts = [f"{e} ×{len(users)}" for e, users in grouped.items()]
+                    count_str = ", ".join(counts)
+                    state.messages[state.active_tab].append(
+                        f"[Sistema] Reação {emoji} {action}. Reações: {count_str}"
+                    )
+                else:
+                    state.messages[state.active_tab].append(
+                        f"[Sistema] Reação {emoji} {action}. (Nenhuma reação restante)"
+                    )
+            except Exception:
+                state.messages[state.active_tab].append(
+                    f"[Sistema] Reação {emoji} {action}."
+                )
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Erro: {e}")
 

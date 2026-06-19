@@ -396,6 +396,29 @@ async def receive_federated_dm(
             )
             return False, "Assinatura criptográfica inválida — mensagem rejeitada"
 
+    # SECURITY: Rate limiting para DMs federadas em modo open_federation.
+    # Em modo open (sem peer registrado), qualquer servidor pode enviar DMs —
+    # sem limite, um atacante pode floodar destinatários locais. Mantemos
+    # um contador simples por dominio de origem com janela de 60s.
+    if open_federation:
+        import time as _time_fed
+        if not hasattr(receive_federated_dm, '_rate_data'):
+            receive_federated_dm._rate_data = {}
+        rate_data = receive_federated_dm._rate_data
+        now = _time_fed.time()
+        domain_key = sender_domain
+        timestamps = rate_data.get(domain_key, [])
+        timestamps = [t for t in timestamps if now - t < 60.0]
+        if len(timestamps) >= 30:  # max 30 DMs/min por dominio
+            logger.warning(
+                "DM federada de %s bloqueada por rate limit (open federation): "
+                "%d mensagens nos últimos 60s",
+                sender_domain, len(timestamps),
+            )
+            return False, f"Rate limit excedido para o servidor '{sender_domain}'"
+        timestamps.append(now)
+        rate_data[domain_key] = timestamps
+
     # P1-FIX: Proteção contra Replay Attack.
     # Antes, um atacante que capturasse o payload JSON assinado podia reenviá-lo
     # repetidas vezes — todas as cópias passavam a validação de assinatura e
@@ -421,16 +444,20 @@ async def receive_federated_dm(
         )
         return False, err
 
-    # Persiste a DM — P0-FIX: usa receiver.id como placeholder de sender_id
-    # (apenas para satisfazer a NOT NULL FK) e guarda o remetente federado
-    # real em federated_sender. Clientes devem checar este campo.
+    # Persiste a DM — usa UUID virtual determinístico para sender_id.
+    # Antes usávamos receiver.id como placeholder, o que corrompia queries
+    # por sender_id (DMs federadas ficavam invisíveis em buscas). Agora
+    # geramos um UUID v5 determinístico a partir do nome@domínio — cada
+    # sender federado tem um ID virtual estável entre sessões.
     import uuid as _uuid
+    _FEDERATED_SENDER_NS = _uuid.UUID("b7e1d2f4-3c8a-4e6b-9f0a-1d2e3f4a5b6c")
     federated_sender = f"@{sender_username}@{sender_domain}"
+    virtual_sender_id = _uuid.uuid5(_FEDERATED_SENDER_NS, federated_sender)
     db_pmsg = PrivateMessage(
         id=_uuid.uuid4(),
-        sender_id=receiver.id,  # placeholder (não há User local para o sender federado)
+        sender_id=virtual_sender_id,  # UUID virtual determinístico (não é User local)
         receiver_id=receiver.id,
-        content=content,  # conteúdo limpo — clientes usam federated_sender como remetente
+        content=content,
         timestamp=timestamp,
         federated_sender=federated_sender,
     )

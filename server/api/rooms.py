@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
-from server.database.models import User, Room, RoomMember, Message
+from server.database.models import User, Room, RoomMember, Message, MessageReaction
 from server.api.dependencies import get_current_user
 from server.rooms.service import (
     criar_sala,
@@ -467,3 +467,215 @@ def update_room_settings(
         description=room.description,
         created_at=room.created_at.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Busca de mensagens (Priority 3)
+# ---------------------------------------------------------------------------
+class SearchMessagesRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=200, description="Termo de busca")
+    limit: int = Field(20, ge=1, le=100, description="Número máximo de resultados")
+    before_id: Optional[str] = Field(None, description="Cursor: retorna resultados anteriores a este ID")
+
+
+class SearchResultResponse(BaseModel):
+    id: str
+    room_id: str
+    room_name: str
+    sender_id: str
+    sender_name: str
+    content: str
+    timestamp: str
+
+
+@router.post("/search", response_model=List[SearchResultResponse])
+def search_messages(
+    req: SearchMessagesRequest,
+    db: Session = Depends(get_db_api),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Busca mensagens em todas as salas que o usuário é membro.
+    Retorna até `limit` resultados contendo o termo de busca (case-insensitive).
+    O usuário só vê mensagens de salas onde é membro ativo.
+    """
+    # Busca em salas onde o usuário é membro ativo (não banido)
+    member_room_ids = [
+        rm.room_id for rm in db.query(RoomMember.room_id).filter(
+            RoomMember.user_id == current_user.id,
+            RoomMember.is_banned == False,
+        ).all()
+    ]
+
+    if not member_room_ids:
+        return []
+
+    # Busca case-insensitive no conteúdo das mensagens
+    # SECURITY: escapa wildcards do LIKE (% e _) para prevenir bypass
+    # de busca (ex: "%" retorna todas as mensagens)
+    _escaped = req.query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    search_term = f"%{_escaped}%"
+
+    # P1-FIX: paginação por cursor — se before_id fornecido, busca o
+    # timestamp da mensagem cursor e filtra mensagens anteriores.
+    query = (
+        db.query(Message, Room)
+        .join(Room, Room.id == Message.room_id)
+        .filter(
+            Message.room_id.in_(member_room_ids),
+            Message.content.ilike(search_term, escape="\\"),
+        )
+    )
+
+    if req.before_id:
+        cursor_msg = db.query(Message).filter(Message.id == req.before_id).first()
+        if cursor_msg:
+            query = query.filter(Message.timestamp < cursor_msg.timestamp)
+
+    messages = (
+        query
+        .order_by(Message.timestamp.desc())
+        .limit(req.limit)
+        .all()
+    )
+
+    # Pré-carrega senders (evita N+1)
+    sender_ids = {m.sender_id for m, _ in messages}
+    sender_map = {}
+    if sender_ids:
+        users = db.query(User).filter(User.id.in_(sender_ids)).all()
+        sender_map = {u.id: u.username for u in users}
+
+    return [
+        SearchResultResponse(
+            id=str(msg.id),
+            room_id=str(msg.room_id),
+            room_name=room.name,
+            sender_id=str(msg.sender_id),
+            sender_name=sender_map.get(msg.sender_id, "Desconhecido"),
+            content=msg.content,
+            timestamp=msg.timestamp.isoformat(),
+        )
+        for msg, room in messages
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Reações em mensagens (Priority 3)
+# ---------------------------------------------------------------------------
+# SECURITY: allowlist de emojis seguros — previne injeção de sequências
+# Unicode perigosas (ZWJ,combinações de modificadores, etc.)
+ALLOWED_EMOJIS = {
+    # Positivos
+    "\U0001f44d", "\U0001f44e", "\U0001f44d\u200d\U0001f3fb",  # 👍 👎 👍🏻
+    "\U0001f44e\u200d\U0001f3fb",  # 👎🏻
+    "\u2764\ufe0f", "\U0001f494", "\U0001f495", "\U0001f496", "\U0001f497",  # ❤️ 💔 💕 💖 💗
+    "\U0001f60a", "\U0001f60d", "\U0001f602", "\U0001f605", "\U0001f606",  # 😊 😍 😂 😅 😆
+    "\U0001f60e", "\U0001f61c", "\U0001f61d", "\U0001f609", "\U0001f60f",  # 😎 😜 🤙 😉 😏
+    "\U0001f621", "\U0001f620", "\U0001f624", "\U0001f625", "\U0001f629",  # 😡 😠 😤 😥 😩
+    "\U0001f62d", "\U0001f631", "\U0001f628", "\U0001f62c", "\U0001f610",  # 😭 😱 😬 😬 😐
+    "\U0001f4af", "\U0001f525", "\U0001f44e\u200d\U0001f4a5",  # 💯 🔥 👎💥
+    "\U0001f389", "\U0001f38a", "\U0001f381", "\U0001f388",  # 🎉 🎊 🎁 🎈
+    "\U0001f44d\u200d\U0001f52c", "\U0001f44d\u200d\U0001f680",  # 👍🔬 👍🚀
+    "\U0001f680", "\U0001f4a4", "\U0001f4a3", "\U0001f440",  # 🚀 💤 💣 👀
+    "\u2b50", "\U0001f31f", "\U0001f4ab", "\U0001f4a1",  # ⭐ 🌟 💫 💡
+    "\U0001f64f", "\U0001f64c", "\U0001f91d", "\U0001f91f",  # 🙏 👏 🤝 🤟
+    "\U0001f44b", "\U0001f44a", "\U0001f595", "\U0001f596",  # 👋 👊 🖕 🖖
+    "\u2705", "\u274c", "\u26a0\ufe0f", "\u2753", "\u2757",  # ✅ ❌ ⚠️ ❓ ❗
+    "\U0001f44d", "\U0001f44e", "\U0001f44f", "\U0001f643",  # 👍 👎 👏 🙃
+    "\U0001f914", "\U0001f923", "\U0001f970", "\U0001f973",  # 🤔 🤣 🥰 🥳
+    "\U0001f600", "\U0001f603", "\U0001f604", "\U0001f601",  # 😃 😃 😄 😁
+}
+
+
+class ReactionRequest(BaseModel):
+    emoji: str = Field(..., min_length=1, max_length=10, description="Emoji da reação")
+
+
+@router.post("/{room_id}/messages/{message_id}/reactions")
+def add_reaction(
+    room_id: uuid.UUID,
+    message_id: uuid.UUID,
+    req: ReactionRequest,
+    db: Session = Depends(get_db_api),
+    current_user: User = Depends(get_current_user),
+):
+    """Adiciona uma reação (emoji) a uma mensagem. Toggle: se já existe, remove."""
+    # SECURITY: valida emoji contra allowlist — previne injeção de sequências
+    # Unicode perigosas (ZWJ, modificadores, etc.)
+    if req.emoji not in ALLOWED_EMOJIS:
+        raise HTTPException(
+            status_code=400,
+            detail="Emoji não permitido. Use um dos emojis da lista suportada.",
+        )
+
+    # Valida que a mensagem pertence à sala
+    msg = db.query(Message).filter(
+        Message.id == message_id,
+        Message.room_id == room_id,
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+
+    # Valida que o usuário é membro da sala
+    member = db.query(RoomMember).filter(
+        RoomMember.room_id == room_id,
+        RoomMember.user_id == current_user.id,
+        RoomMember.is_banned == False,
+    ).first()
+    if not member:
+        raise HTTPException(status_code=403, detail="Você não é membro desta sala.")
+
+    # Toggle: se já reagiu com este emoji, remove; senão, adiciona
+    existing = db.query(MessageReaction).filter(
+        MessageReaction.message_id == message_id,
+        MessageReaction.user_id == current_user.id,
+        MessageReaction.emoji == req.emoji,
+    ).first()
+
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"status": "removed", "emoji": req.emoji}
+    else:
+        reaction = MessageReaction(
+            message_id=message_id,
+            user_id=current_user.id,
+            emoji=req.emoji,
+        )
+        db.add(reaction)
+        db.commit()
+        return {"status": "added", "emoji": req.emoji}
+
+
+@router.get("/{room_id}/messages/{message_id}/reactions")
+def get_reactions(
+    room_id: uuid.UUID,
+    message_id: uuid.UUID,
+    db: Session = Depends(get_db_api),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna todas as reações de uma mensagem agrupadas por emoji."""
+    msg = db.query(Message).filter(
+        Message.id == message_id,
+        Message.room_id == room_id,
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+
+    reactions = db.query(MessageReaction).filter(
+        MessageReaction.message_id == message_id,
+    ).all()
+
+    # Agrupa por emoji
+    grouped = {}
+    for r in reactions:
+        if r.emoji not in grouped:
+            grouped[r.emoji] = []
+        user = db.query(User).filter(User.id == r.user_id).first()
+        grouped[r.emoji].append({
+            "user_id": str(r.user_id),
+            "username": user.username if user else "Desconhecido",
+        })
+
+    return {"reactions": grouped}

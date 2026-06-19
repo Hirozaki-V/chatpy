@@ -80,7 +80,7 @@ class TestBug2ErrorDialog(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("error_dialog.connect", content)
         self.assertIn("_on_error_dialog", content)
@@ -91,7 +91,7 @@ class TestBug2ErrorDialog(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("def _on_error_dialog", content)
         self.assertIn("QMessageBox.warning(self, title, message)", content)
@@ -105,7 +105,7 @@ class TestBug3EventFilterCrash(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         # Verifica que nenhuma linha ATIVA (não comentário) chama installEventFilter global
         active_install = [
@@ -121,7 +121,7 @@ class TestBug3EventFilterCrash(unittest.TestCase):
             f"Linhas ativas encontradas: {active_install}"
         )
         # Verifica que foi substituído por polling
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("_check_activity_polling", content)
         self.assertIn("BUG3-FIX", content)
@@ -131,7 +131,7 @@ class TestBug3EventFilterCrash(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("_idle_activity_timer", content)
         self.assertIn("QCursor.pos()", content)
@@ -142,7 +142,7 @@ class TestBug3EventFilterCrash(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         # O método existe mas não processa eventos (só retorna False)
         self.assertIn("def eventFilter(self, obj, event):", content)
@@ -153,7 +153,7 @@ class TestBug3EventFilterCrash(unittest.TestCase):
         main_window_path = os.path.join(
             os.path.dirname(__file__), "..", "client-desktop", "ui", "main_window.py"
         )
-        with open(main_window_path, "r") as f:
+        with open(main_window_path, "r", encoding="utf-8") as f:
             content = f.read()
         # Verifica que compara posição atual com última conhecida
         self.assertIn("current_pos != self._last_cursor_pos", content)

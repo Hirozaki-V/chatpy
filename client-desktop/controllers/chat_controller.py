@@ -1026,6 +1026,15 @@ class ChatController(QObject):
                         self.notification_requested.emit(f"Mensagem de {sender_name}", content)
                         self.state_updated.emit()
 
+                        # Priority 3: beep sonoro quando DM chega e a aba não está ativa.
+                        # Paridade com o CLI que já tem /beep on|off.
+                        if not is_read:
+                            try:
+                                from PySide6.QtWidgets import QApplication
+                                QApplication.beep()
+                            except Exception:
+                                pass
+
             elif event == EventType.USER_PRESENCE.value:
                 # Otimização: em vez de recarregar TUDO (load_initial_data que dispara 4 calls REST),
                 # apenas recarrega a lista de online users
@@ -1041,6 +1050,12 @@ class ChatController(QObject):
                 self.notification_requested.emit(
                     "Solicitação de Amizade", f"{sender_name} enviou uma solicitação de amizade."
                 )
+                # Priority 3: beep para solicitação de amizade
+                try:
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.beep()
+                except Exception:
+                    pass
 
             elif event == EventType.FRIEND_ACCEPTED.value:
                 user_id = payload.get("user_id")
@@ -1063,6 +1078,12 @@ class ChatController(QObject):
                     "Solicitação de Amizade Aceita",
                     f"{username} aceitou sua solicitação de amizade.",
                 )
+                # Priority 3: beep para amizade aceita
+                try:
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.beep()
+                except Exception:
+                    pass
 
             elif event == EventType.FRIEND_REMOVED.value:
                 # Quando a amizade é desfeita, atualizamos a lista de amigos e
@@ -1099,6 +1120,27 @@ class ChatController(QObject):
                     self.state.active_tab,
                     f"Sala {room_name} criada com sucesso!",
                 )
+
+            elif event == EventType.MESSAGE_REACTION.value:
+                # Priority 3: atualiza reação na mensagem
+                message_id = payload.get("message_id")
+                emoji = payload.get("emoji")
+                action = payload.get("action")
+                username = payload.get("username", "")
+                if message_id and emoji and action:
+                    if message_id not in self.state.message_reactions:
+                        self.state.message_reactions[message_id] = {}
+                    if emoji not in self.state.message_reactions[message_id]:
+                        self.state.message_reactions[message_id][emoji] = []
+                    if action == "added":
+                        if username not in self.state.message_reactions[message_id][emoji]:
+                            self.state.message_reactions[message_id][emoji].append(username)
+                    elif action == "removed":
+                        if username in self.state.message_reactions[message_id][emoji]:
+                            self.state.message_reactions[message_id][emoji].remove(username)
+                        if not self.state.message_reactions[message_id][emoji]:
+                            del self.state.message_reactions[message_id][emoji]
+                    self.state_updated.emit()
 
             elif event == EventType.DM_START_SUCCESS.value:
                 receiver_name = payload.get("receiver_name")

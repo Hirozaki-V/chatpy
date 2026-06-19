@@ -252,7 +252,24 @@ app = FastAPI(
 # CORS — permite configuração flexível via env (default permite localhost)
 # ---------------------------------------------------------------------------
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost,http://127.0.0.1").split(",")
-_cors_origins = [o.strip() for o in _cors_origins if o.strip()]
+# SECURITY: normaliza origens — remove 0.0.0.0 (inválido como origin no browser),
+# valida formato de URL e remove entradas vazias ou malformadas.
+import re as _re_cors
+_origins_cleaned = []
+for o in _cors_origins:
+    o = o.strip()
+    if not o:
+        continue
+    # Rejeita 0.0.0.0 — browsers enviam Origin: null para este host
+    if "0.0.0.0" in o:
+        logger.warning("CORS: origem '%s' ignorada — 0.0.0.0 não é válido como origin", o)
+        continue
+    # Valida formato básico de URL (scheme://host)
+    if o != "*" and not _re_cors.match(r"^https?://[a-zA-Z0-9._-]+(:\d+)?$", o):
+        logger.warning("CORS: origem '%s' ignorada — formato inválido", o)
+        continue
+    _origins_cleaned.append(o)
+_cors_origins = _origins_cleaned
 
 # CORREÇÃO: default anterior restringia a localhost, o que impedia o cliente
 # desktop de se conectar quando o servidor rodava em outra máquina da LAN
@@ -630,6 +647,24 @@ async def receive_federated_dm_endpoint(req: Request):
                 content={"detail": f"Campo obrigatório ausente: {field}"},
             )
 
+    # SECURITY: valida tamanho do conteúdo para prevenir DoS via DMs federadas
+    # com payloads gigantes que consumiriam memória e disco desnecessariamente.
+    content = payload.get("content", "")
+    if len(content) > 5000:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Conteúdo da DM federada excede 5000 caracteres."},
+        )
+
+    # SECURITY: valida tamanho dos campos string para prevenir memory bomb
+    for field in ("sender_username", "sender_domain", "receiver_username"):
+        val = payload.get(field, "")
+        if len(val) > 255:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Campo '{field}' excede 255 caracteres."},
+            )
+
     try:
         ts = datetime.fromisoformat(payload["timestamp"])
         if ts.tzinfo is None:
@@ -638,6 +673,26 @@ async def receive_federated_dm_endpoint(req: Request):
         ts = datetime.now(timezone.utc)
 
     with get_db() as db:
+        # SECURITY: valida formato dos usernames federados para prevenir
+        # injeção de caracteres especiais que poderiam corromper queries
+        # ou causar comportamento inesperado no banco.
+        _SAFE_USERNAME_RE = __import__("re").compile(r"^[a-zA-Z0-9_.-]+$")
+        if not _SAFE_USERNAME_RE.match(payload["sender_username"]):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "sender_username contém caracteres inválidos."},
+            )
+        if not _SAFE_USERNAME_RE.match(payload["receiver_username"]):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "receiver_username contém caracteres inválidos."},
+            )
+        if not _SAFE_USERNAME_RE.match(payload["sender_domain"]):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "sender_domain contém caracteres inválidos."},
+            )
+
         # P0-FIX: receive_federated_dm agora é async — usa await direto
         success, msg = await receive_federated_dm(
             db=db,

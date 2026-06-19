@@ -27,7 +27,7 @@ class MessageSendRoomPayload(BaseModel):
         attachment_id (Optional[UUID]): UUID do anexo associado (opcional).
     """
     room_id: UUID = Field(..., description="UUID da sala destinatária")
-    content: str = Field(..., description="Conteúdo textual da mensagem")
+    content: str = Field(..., max_length=5000, description="Conteúdo textual da mensagem")
     attachment_id: Optional[UUID] = Field(None, description="UUID do anexo associado")
 
 class MessageSendPrivatePayload(BaseModel):
@@ -42,7 +42,7 @@ class MessageSendPrivatePayload(BaseModel):
         attachment_id (Optional[UUID]): UUID do anexo associado (opcional).
     """
     receiver_id: UUID = Field(..., description="UUID do usuário destinatário")
-    content: str = Field(..., description="Conteúdo textual da mensagem privada")
+    content: str = Field(..., max_length=5000, description="Conteúdo textual da mensagem privada")
     attachment_id: Optional[UUID] = Field(None, description="UUID do anexo associado")
 
 class RoomJoinPayload(BaseModel):
@@ -55,8 +55,8 @@ class RoomJoinPayload(BaseModel):
         room_name (str): Nome identificador da sala (normalmente prefixada com #, ex: '#geral').
         password (Optional[str]): Senha da sala (opcional, exigida apenas para salas protegidas).
     """
-    room_name: str = Field(..., description="Nome da sala na qual deseja ingressar")
-    password: Optional[str] = Field(None, description="Senha de acesso caso seja uma sala protegida")
+    room_name: str = Field(..., max_length=50, description="Nome da sala na qual deseja ingressar")
+    password: Optional[str] = Field(None, max_length=128, description="Senha de acesso caso seja uma sala protegida")
 
 class RoomCreatePayload(BaseModel):
     """
@@ -64,9 +64,9 @@ class RoomCreatePayload(BaseModel):
     
     Enviado pelo cliente para criar uma nova sala via WebSocket.
     """
-    room_name: str = Field(..., description="Nome da sala a ser criada")
+    room_name: str = Field(..., min_length=2, max_length=50, description="Nome da sala a ser criada")
     is_private: bool = Field(False, description="Se a sala é privada/protegida por senha")
-    password: Optional[str] = Field(None, description="Senha da sala se for privada")
+    password: Optional[str] = Field(None, max_length=128, description="Senha da sala se for privada")
 
 class DmStartPayload(BaseModel):
     """
@@ -107,3 +107,20 @@ class MessageSendFederatedPayload(BaseModel):
     """
     receiver_username: str = Field(..., description="Username federado: @user@dominio")
     content: str = Field(..., description="Conteúdo da mensagem")
+
+
+class MessageReactionPayload(BaseModel):
+    """
+    Priority 3: Payload para o evento 'message.reaction' (client → server).
+
+    Enviado pelo cliente para reagir (ou remover reação) a uma mensagem.
+    O servidor valida e retransmite para todos os membros da sala.
+
+    Campos:
+        room_id (UUID): UUID da sala onde está a mensagem
+        message_id (UUID): UUID da mensagem a reagir
+        emoji (str): Emoji da reação (ex: "👍", "❤️")
+    """
+    room_id: UUID = Field(..., description="UUID da sala")
+    message_id: UUID = Field(..., description="UUID da mensagem")
+    emoji: str = Field(..., min_length=1, max_length=10, description="Emoji da reação")

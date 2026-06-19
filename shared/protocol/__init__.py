@@ -12,6 +12,7 @@ from .client_events import (
     DmStartPayload,
     UserTypingPayload,
     MessageSendFederatedPayload,
+    MessageReactionPayload,
 )
 from .server_events import (
     AuthSuccessPayload,
@@ -37,6 +38,7 @@ EVENT_PAYLOAD_MAP: Dict[EventType, Type[BaseModel]] = {
     EventType.DM_START: DmStartPayload,
     EventType.USER_TYPING: UserTypingPayload,
     EventType.MESSAGE_SEND_FEDERATED: MessageSendFederatedPayload,
+    EventType.MESSAGE_REACTION: MessageReactionPayload,
     EventType.AUTH_SUCCESS: AuthSuccessPayload,
     EventType.MESSAGE_RECEIVE: MessageReceivePayload,
     EventType.USER_PRESENCE: UserPresencePayload,
