@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 _BACKOFF_BASE = 1.0
 _BACKOFF_MAX = 60.0
 _BACKOFF_FACTOR = 2.0
+_MAX_RECONNECT_ATTEMPTS = 50  # Para após 50 tentativas (~30 min com backoff exponencial)
 
 # P1-FIX: arquivo para persistir fila offline entre sessões. Se o cliente
 # fechar enquanto offline, mensagens enfileiradas seriam perdidas. Agora
@@ -110,7 +111,7 @@ class WebSocketClient:
             logger.warning("Falha ao carregar fila offline persistida: %s", e)
 
     def _persist_queue(self):
-        """Persiste fila offline atual em disco."""
+        """Persiste fila offline atual em disco (escrita atômica)."""
         path = _get_offline_queue_path(self.username)
         if not path:
             return
@@ -119,8 +120,18 @@ class WebSocketClient:
                 {"event": evt.value, "payload": payload}
                 for evt, payload in self._offline_queue
             ]
-            with open(path, "w", encoding="utf-8") as f:
+            # Escrita atômica: grava em arquivo temporário e depois renomeia.
+            # Se o processo for interrompido no meio, o arquivo original não é corrompido.
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                import os as _os_fsync
+                try:
+                    _os_fsync.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp_path, path)  # atômico no mesmo filesystem
         except Exception as e:
             logger.warning("Falha ao persistir fila offline: %s", e)
 
@@ -145,6 +156,13 @@ class WebSocketClient:
         self._reconnect = True
 
         while self._reconnect:
+            if attempt >= _MAX_RECONNECT_ATTEMPTS:
+                logger.error(
+                    "WebSocket: máximo de %d tentativas de conexão atingido. Desistindo.",
+                    _MAX_RECONNECT_ATTEMPTS,
+                )
+                self._reconnect = False
+                return
             try:
                 logger.info("WebSocket: tentando conectar a %s (tentativa %d)…", self.ws_url, attempt + 1)
                 self.websocket = await websockets.connect(self.ws_url)
@@ -314,6 +332,13 @@ class WebSocketClient:
                 attempt = 0
                 delay = _BACKOFF_BASE
                 while self._reconnect:
+                    if attempt >= _MAX_RECONNECT_ATTEMPTS:
+                        logger.error(
+                            "WebSocket: máximo de %d tentativas de reconexão atingido. Desistindo.",
+                            _MAX_RECONNECT_ATTEMPTS,
+                        )
+                        self._reconnect = False
+                        break
                     attempt += 1
                     logger.info("WebSocket: reconectando (tentativa %d) em %.1fs…", attempt, delay)
                     await self._invoke(self.on_reconnecting_callback, attempt, delay)

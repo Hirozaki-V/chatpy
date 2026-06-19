@@ -88,6 +88,25 @@ class RateLimiter:
                 )
                 return True
 
+            # Periodic cleanup: a cada 100 mensagens, limpa entradas expiradas
+            # para evitar vazamento de memória em servidores de longa duração
+            self._cleanup_count = getattr(self, "_cleanup_count", 0) + 1
+            if self._cleanup_count >= 100:
+                self._cleanup_count = 0
+                cutoff = now - self.mute_duration_seconds * 2
+                expired_users = [
+                    u for u, ts_list in self.user_message_timestamps.items()
+                    if not ts_list or max(ts_list) < cutoff
+                ]
+                for u in expired_users:
+                    del self.user_message_timestamps[u]
+                expired_mutes = [
+                    u for u, mute_ts in self.user_mute_until.items()
+                    if mute_ts < now
+                ]
+                for u in expired_mutes:
+                    del self.user_mute_until[u]
+
             return False
 
     def clear(self, username: Optional[str] = None):
@@ -230,6 +249,25 @@ class IpRateLimiter:
                     ip, len(timestamps), self.window_seconds,
                 )
                 return True
+
+            # Periodic cleanup: a cada 100 checks, limpa entradas expiradas
+            self._cleanup_count = getattr(self, "_cleanup_count", 0) + 1
+            if self._cleanup_count >= 100:
+                self._cleanup_count = 0
+                cutoff = now - self.mute_duration_seconds * 2
+                expired_ips = [
+                    i for i, ts_list in self._ip_timestamps.items()
+                    if not ts_list or max(ts_list) < cutoff
+                ]
+                for i in expired_ips:
+                    del self._ip_timestamps[i]
+                expired_mutes = [
+                    i for i, mute_ts in self._ip_mute_until.items()
+                    if mute_ts < now
+                ]
+                for i in expired_mutes:
+                    del self._ip_mute_until[i]
+
             return False
 
     def clear(self, ip: Optional[str] = None):

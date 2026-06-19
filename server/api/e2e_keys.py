@@ -92,13 +92,46 @@ def upload_prekeys(
     current_user: User = Depends(get_current_user),
 ):
     """Adiciona One-Time PreKeys ao pool do usuário."""
+    # SECURITY: valida cada prekey individualmente
+    MAX_PREKEYS_PER_UPLOAD = 100
+    if len(req.prekeys) > MAX_PREKEYS_PER_UPLOAD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Máximo de {MAX_PREKEYS_PER_UPLOAD} prekeys por upload.",
+        )
+
+    # Conta prekeys existentes para evitar DoS de disco
+    existing_count = db.query(OneTimePreKey).filter(
+        OneTimePreKey.user_id == current_user.id,
+        OneTimePreKey.used == False,
+    ).count()
+    MAX_PREKEYS_PER_USER = 500
+    if existing_count + len(req.prekeys) > MAX_PREKEYS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Limite de {MAX_PREKEYS_PER_USER} prekeys por usuário excedido. "
+                   f"Você já tem {existing_count} não utilizadas.",
+        )
+
     added = 0
     for pk in req.prekeys:
+        # Valida campos obrigatórios de cada prekey
+        if not isinstance(pk, dict):
+            continue
+        key_id = pk.get("key_id")
+        public_key_pem = pk.get("public_key_pem", "")
+        if key_id is None or not public_key_pem:
+            continue
+        if not isinstance(key_id, int) or key_id < 0:
+            continue
+        if len(public_key_pem) > 4096:  # limite razoável para PEM
+            continue
+
         record = OneTimePreKey(
             id=uuid.uuid4(),
             user_id=current_user.id,
-            key_id=pk["key_id"],
-            public_key_pem=pk["public_key_pem"],
+            key_id=key_id,
+            public_key_pem=public_key_pem,
             used=False,
         )
         db.add(record)
@@ -165,28 +198,39 @@ def get_user_keys(
             db.rollback()
     except Exception as e:
         # Fallback: se RETURNING não for suportado (SQLite < 3.35), usa
-        # o approach anterior com retry otimista. Isto NÃO é 100% seguro
-        # contra races mas preserva compatibilidade.
-        logger.warning("RETURNING não suportado, fallback para SELECT+UPDATE: %s", e)
+        # retry otimista com SELECT FOR UPDATE em loop. Cada tentativa
+        # re-checa used após refresh — se outra transação consumiu,
+        # tenta a próxima prekey disponível.
+        logger.warning("RETURNING não suportado, fallback para SELECT+UPDATE com retry: %s", e)
         db.rollback()
-        otpk = db.query(OneTimePreKey).filter(
-            OneTimePreKey.user_id == target.id,
-            OneTimePreKey.used == False,
-        ).order_by(OneTimePreKey.key_id.asc()).first()
 
-        if otpk:
-            # Re-checa used antes de marcar (race window)
+        for _attempt in range(5):  # máximo 5 tentativas
+            otpk = db.query(OneTimePreKey).filter(
+                OneTimePreKey.user_id == target.id,
+                OneTimePreKey.used == False,
+            ).order_by(OneTimePreKey.key_id.asc()).first()
+
+            if not otpk:
+                break  # pool esgotado
+
+            # Re-checa used antes de marcar (race window minimizada)
             db.refresh(otpk, ["used"])
             if otpk.used:
-                # Já foi consumida por outra transação — aborta
+                # Já foi consumida por outra transação — tenta próxima
                 db.rollback()
-            else:
+                continue
+
+            try:
                 otpk.used = True
                 db.commit()
                 one_time_prekey = PreKeyResponse(
                     key_id=otpk.key_id,
                     public_key_pem=otpk.public_key_pem,
                 )
+                break
+            except Exception:
+                db.rollback()
+                continue  # conflito de concorrência — tenta próxima
 
     return UserKeysResponse(
         user_id=str(target.id),

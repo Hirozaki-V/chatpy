@@ -408,17 +408,30 @@ class WebSocketDispatcher:
                 )
                 bot_responses = await process_bots(content, bot_context)
                 for bot, response in bot_responses:
+                    # Persiste a resposta do bot no banco (antes só ia via WS)
+                    bot_msg_id = uuid.uuid4()
+                    bot_ts = datetime.now(timezone.utc)
+                    try:
+                        def _persist_bot_msg():
+                            with get_db() as db:
+                                from server.rooms.service import salvar_mensagem
+                                db_msg = salvar_mensagem(db, payload.room_id, bot.uuid, response)
+                                return db_msg.id, db_msg.timestamp
+                        bot_msg_id, bot_ts = await asyncio.to_thread(_persist_bot_msg)
+                    except Exception as e:
+                        logger.debug("Erro ao persistir msg do bot %s: %s", bot.name, e)
+
                     bot_frame = {
                         "event": EventType.MESSAGE_RECEIVE.value,
                         "payload": {
-                            "id": str(uuid.uuid4()),
+                            "id": str(bot_msg_id),
                             "room_id": str(payload.room_id),
-                            "sender_id": str(bot.uuid),  # P0-FIX: UUID do bot, não do invocador
-                            "sender_name": f"🤖 {bot.name}",  # nome do bot
+                            "sender_id": str(bot.uuid),
+                            "sender_name": f"🤖 {bot.name}",
                             "content": response,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": bot_ts.isoformat() if hasattr(bot_ts, 'isoformat') else datetime.now(timezone.utc).isoformat(),
                             "attachment": None,
-                            "is_bot": True,  # flag explícita para clientes
+                            "is_bot": True,
                         },
                     }
                     await self.manager.broadcast_to_users(bot_frame, member_ids)
@@ -1007,10 +1020,17 @@ class WebSocketDispatcher:
                 if not message:
                     return None, "Mensagem não encontrada."
 
+                # SECURITY: valida emoji contra a allowlist do REST endpoint.
+                # Sem isto, o WS bypassava a proteção e aceitava qualquer string.
+                emoji = payload.emoji
+                from server.api.rooms import ALLOWED_EMOJIS
+                if emoji not in ALLOWED_EMOJIS:
+                    return None, f"Emoji '{emoji}' não está na lista de emojis permitidos."
+
                 existing = db.query(MessageReaction).filter(
                     MessageReaction.message_id == payload.message_id,
                     MessageReaction.user_id == user_id,
-                    MessageReaction.emoji == payload.emoji,
+                    MessageReaction.emoji == emoji,
                 ).first()
 
                 if existing:
@@ -1020,7 +1040,7 @@ class WebSocketDispatcher:
                     reaction = MessageReaction(
                         message_id=payload.message_id,
                         user_id=user_id,
-                        emoji=payload.emoji,
+                        emoji=emoji,
                     )
                     db.add(reaction)
                     action = "added"

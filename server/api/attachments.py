@@ -276,6 +276,27 @@ def download_attachment(
             detail="Arquivo físico correspondente não foi localizado no servidor.",
         )
 
+    # SECURITY: valida que stored_path está dentro de UPLOAD_DIR.
+    # Se o banco for comprometido e stored_path for manipulado para
+    # "/etc/passwd", esta verificação impede a leitura de arquivos arbitrários.
+    try:
+        real_stored = os.path.realpath(attachment.stored_path)
+        real_upload = os.path.realpath(UPLOAD_DIR)
+        if not real_stored.startswith(real_upload + os.sep) and real_stored != real_upload:
+            logger.error(
+                "SECURITY: stored_path '%s' está fora de UPLOAD_DIR '%s'. "
+                "Possível manipulação de banco de dados.",
+                attachment.stored_path, UPLOAD_DIR,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Arquivo não encontrado no servidor.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     # Sanitiza filename ANTES de passar para FileResponse (evita header injection)
     safe_filename = _sanitize_filename(attachment.filename)
 
@@ -306,6 +327,23 @@ def cleanup_orphan_attachments():
 
         count = 0
         for att in orphans:
+            # SECURITY: valida que stored_path está dentro de UPLOAD_DIR
+            # antes de deletar — impede que banco comprometido leve à
+            # exclusão de arquivos arbitrários do sistema.
+            try:
+                real_stored = os.path.realpath(att.stored_path)
+                real_upload = os.path.realpath(UPLOAD_DIR)
+                if not real_stored.startswith(real_upload + os.sep) and real_stored != real_upload:
+                    logger.error(
+                        "SECURITY: cleanup pulou stored_path '%s' — fora de UPLOAD_DIR.",
+                        att.stored_path,
+                    )
+                    db.delete(att)
+                    count += 1
+                    continue
+            except Exception:
+                pass
+
             # 1. Remove o arquivo físico do disco
             if os.path.exists(att.stored_path):
                 try:

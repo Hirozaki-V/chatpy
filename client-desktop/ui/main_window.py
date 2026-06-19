@@ -97,6 +97,8 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_menu()
         self._connect_signals()
+        # Drag-and-drop: aceita arquivos arrastados na janela
+        self.setAcceptDrops(True)
         
         # CORREÇÃO: antes usávamos time.sleep(1.5) — magic number sem garantia
         # de que o WS estaria autenticado a essa altura. Se o usuário fizesse
@@ -1008,6 +1010,34 @@ class MainWindow(QMainWindow):
             # também começam na coluna 0 (e não "penduradas" no nick).
             content_escaped = html.escape(content)
 
+            # Markdown básico: converte **bold**, *italic*, `code`, ```codeblock```
+            # e [links](url) para HTML. Aplica APÓS html.escape para não injetar HTML.
+            import re as _re_md
+            # ```code block```
+            content_escaped = _re_md.sub(
+                r'```(.*?)```',
+                r'<span style="background:#2a2a2a; color:#e0e0e0; padding:1px 4px; font-family:monospace;">\1</span>',
+                content_escaped, flags=_re_md.DOTALL,
+            )
+            # **bold**
+            content_escaped = _re_md.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', content_escaped)
+            # *italic*
+            content_escaped = _re_md.sub(r'\*(.*?)\*', r'<i>\1</i>', content_escaped)
+            # `inline code`
+            content_escaped = _re_md.sub(
+                r'`([^`]+)`',
+                r'<span style="background:#2a2a2a; color:#e0e0e0; padding:1px 3px; font-family:monospace;">\1</span>',
+                content_escaped,
+            )
+            # [text](url) — links clicáveis (URL escapada por html.escape já)
+            content_escaped = _re_md.sub(
+                r'\[([^\]]+)\]\(([^)]+)\)',
+                r'<a href="\2" style="color:#3498db;">\1</a>',
+                content_escaped,
+            )
+            # Quebras de linha
+            content_escaped = content_escaped.replace('\n', '<br/>')
+
             from ui.theme import THEMES
             colors = THEMES.get(self.current_theme, THEMES["dark"])
 
@@ -1106,7 +1136,7 @@ class MainWindow(QMainWindow):
                 f"<td style='border:none; padding:0; vertical-align:top; white-space:nowrap; width:1px;'>"
                 f"<span style='color:{colors['msg_time']};'>[{t_str}]</span> {nick_html}&nbsp;&nbsp;"
                 f"</td>"
-                f"<td style='border:none; padding:0; vertical-align:top; white-space:pre-wrap; word-wrap:break-word;'>"
+                f"<td style='border:none; padding:0; vertical-align:top; word-wrap:break-word;'>"
                 f"<span style='color:{text_color};'>{content_escaped}</span>"
                 f"</td>"
                 f"</tr>"
@@ -1418,6 +1448,28 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Múltiplas {label}: {preview}", 5000
         )
+
+    # -----------------------------------------------------------------------
+    # Drag-and-drop de arquivos
+    # -----------------------------------------------------------------------
+    def dragEnterEvent(self, event):
+        """Aceita o drag se contiver URLs (arquivos)."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Ao soltar arquivo, faz upload como anexo na aba ativa."""
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        # Pega apenas o primeiro arquivo (upload múltiplo futuro)
+        file_path = urls[0].toLocalFile()
+        if not file_path or not os.path.isfile(file_path):
+            return
+        active_tab = self.controller.state.active_tab
+        self._handle_attach_file(active_tab, preselected_path=file_path)
 
     def closeEvent(self, event):
         """
@@ -1995,9 +2047,10 @@ class MainWindow(QMainWindow):
         self._emoji_dialog.raise_()
         self._emoji_dialog.activateWindow()
 
-    def _handle_attach_file(self, tab_name):
+    def _handle_attach_file(self, tab_name, preselected_path=None):
         """
         Abre diálogo de seleção de arquivo e valida localmente ANTES do upload.
+        Se preselected_path for fornecido (drag-and-drop), pula o diálogo.
 
         P0-2: Antes usava denylist fraca (`.exe`, `.bat`, ...) que era facilmente
         bypassável renomeando, e perdia `.py`, `.jar`, `.app`, etc. Agora usa a
@@ -2011,16 +2064,18 @@ class MainWindow(QMainWindow):
             get_allowed_extensions_display,
         )
 
-        # Constrói filtro de arquivo do diálogo a partir da allowlist
-        # (mais amigável que "All files (*)" — usuário só vê o que pode enviar)
-        ext_filter = " ".join(f"*{e}" for e in sorted(ALLOWED_EXTENSIONS))
-        file_filter = f"Arquivos permitidos ({ext_filter});;Todos os arquivos (*)"
+        if preselected_path:
+            filePath = preselected_path
+        else:
+            # Constrói filtro de arquivo do diálogo a partir da allowlist
+            ext_filter = " ".join(f"*{e}" for e in sorted(ALLOWED_EXTENSIONS))
+            file_filter = f"Arquivos permitidos ({ext_filter});;Todos os arquivos (*)"
 
-        filePath, _ = QFileDialog.getOpenFileName(
-            self, "Selecionar Arquivo para Anexo", "", file_filter
-        )
-        if not filePath:
-            return
+            filePath, _ = QFileDialog.getOpenFileName(
+                self, "Selecionar Arquivo para Anexo", "", file_filter
+            )
+            if not filePath:
+                return
 
         # Validação 1: tamanho
         file_size = os.path.getsize(filePath)

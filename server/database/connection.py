@@ -81,15 +81,16 @@ def get_db():
     automáticos e fechamento seguro de conexões.
     """
     db = SessionLocal()
+    _rolled_back = False
     try:
         yield db
-        # Commita sempre que houver transação ativa (mesmo após flush).
-        # Antes a checagem `if db.new or db.dirty or db.deleted` falhava em
-        # endpoints que já tinham chamado flush() — os objetos saíam do
-        # estado 'new' mas a transação não era commitada.
-        if db.in_transaction():
+        # Só commita se não houve rollback parcial durante o uso.
+        # Antes, se um handler fazia db.rollback() e depois yield retornava,
+        # o context manager commitava uma transação vazia ou dados parciais.
+        if not _rolled_back and db.in_transaction():
             db.commit()
     except Exception:
+        _rolled_back = True
         db.rollback()
         raise
     finally:

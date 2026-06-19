@@ -5,6 +5,7 @@ Antes só existia o tema dark (verde sobre preto). Agora o usuário pode
 alternar com /theme dark|light. O tema é persistido em arquivo.
 """
 import os
+import shutil
 from typing import List
 from rich.layout import Layout
 from rich.panel import Panel
@@ -16,20 +17,25 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 THEMES = {
     "dark": {
-        # Cores Rich — estilo terminal cibernético
-        "header_bg": "green",
+        "header_bg": "bright_green",
         "header_fg": "black",
-        "border": "green",
-        "panel_style": "green",
-        "active_room_bg": "dark_green",
+        "border": "bright_green",
+        "panel_style": "bright_green",
+        "active_room_bg": "green",
         "active_room_fg": "white",
-        "prompt_arrow": "bold green",
-        "input_text": "white",
-        "cursor": "blink bold green",
+        "prompt_arrow": "bold bright_green",
+        "input_text": "bright_white",
+        "cursor": "blink bold bright_green",
+        "msg_system": "bright_yellow",
+        "msg_own": "bright_cyan",
+        "msg_other": "bright_white",
+        "msg_time": "bright_black",
+        "room_active": "bold bright_green",
+        "room_inactive": "bright_white",
+        "user_online": "bright_green",
     },
     "light": {
-        # Cores claras — para terminais com fundo branco
-        "header_bg": "white",
+        "header_bg": "bright_white",
         "header_fg": "black",
         "border": "blue",
         "panel_style": "blue",
@@ -38,21 +44,21 @@ THEMES = {
         "prompt_arrow": "bold blue",
         "input_text": "black",
         "cursor": "blink bold blue",
+        "msg_system": "dark_red",
+        "msg_own": "dark_blue",
+        "msg_other": "black",
+        "msg_time": "bright_black",
+        "room_active": "bold blue",
+        "room_inactive": "black",
+        "user_online": "dark_green",
     },
 }
 
 # Arquivo de preferência de tema
-# UX FIX (auditoria-2026-06): antes, THEME_FILE apontava para o diretório
-# do código-fonte (client-cli/../cli_theme.txt) — em instalações via pip
-# este path é read-only (ex: /usr/lib/python3.x/site-packages/chatpy/),
-# então save_theme() falhava silenciosamente e a preferência era perdida
-# entre sessões. Agora usamos cli_theme_path() de server.paths que
-# resolve para ~/.chatpy/cli_theme.txt (writable por qualquer usuário).
 try:
     from server.paths import cli_theme_path as _cli_theme_path
     THEME_FILE = str(_cli_theme_path())
 except Exception:
-    # Fallback: diretório do usuário (~/.chatpy/cli_theme.txt)
     import os as _os
     _fallback_dir = _os.path.expanduser("~/.chatpy")
     try:
@@ -100,52 +106,52 @@ def create_chat_layout(
 ) -> Layout:
     """
     Cria e retorna a estrutura de Layout Rich com estilo WeeChat/IRC clássico.
-
-    #16: agora aceita parâmetro `theme` ('dark' ou 'light'). Se None,
-    usa o tema salvo em disco (default: dark).
-
-    P0-FIX: aceita `typing_indicators` (dict {tab_name: {username: timestamp}})
-    e `typing_ttl_s` — renderiza "X está digitando..." no rodapé do chat
-    APENAS para usuários ativos nos últimos typing_ttl_s segundos. Antes,
-    estes indicadores eram appendados em state.messages e poluíam o
-    histórico permanentemente.
     """
     if theme is None:
         theme = get_saved_theme()
     colors = THEMES.get(theme, THEMES["dark"])
 
+    # Detecta largura do terminal
+    try:
+        term_width = shutil.get_terminal_size().columns
+    except Exception:
+        term_width = 120
+
+    has_sidebar = term_width >= 90
+
+    # --- Estrutura do layout ---
     layout = Layout()
 
-    # Divide a tela principal
     layout.split(
         Layout(name="header", size=1),
         Layout(name="body"),
-        Layout(name="footer", size=1)
+        Layout(name="footer", size=3),
     )
 
-    # Divide o corpo em chat (esquerda) e sidebar (direita)
-    layout["body"].split_row(
-        Layout(name="chat", ratio=4),
-        Layout(name="sidebar", ratio=1)
-    )
+    if has_sidebar:
+        layout["body"].split_row(
+            Layout(name="chat", ratio=3),
+            Layout(name="sidebar", ratio=1, minimum_size=22),
+        )
+        layout["sidebar"].split(
+            Layout(name="rooms_list"),
+            Layout(name="users_list"),
+        )
+    else:
+        layout["body"].split_row(
+            Layout(name="chat"),
+        )
 
-    # Divide a sidebar verticalmente (Salas em cima, Usuários em baixo)
-    layout["sidebar"].split(
-        Layout(name="rooms_list", ratio=1),
-        Layout(name="users_list", ratio=1)
-    )
-
-    # 1. Header (Estilo barra de status IRC clássica)
+    # --- Header ---
     header_style = f"bold {colors['header_fg']} on {colors['header_bg']}"
+    status_icon = {"online": "+", "away": "-"}.get(status, "?")
     header_text = Text(
-        f" 💬 ChatPy V2 | Usuário: {username} ({status}) | Canal Ativo: {active_tab} | Tema: {theme} ",
+        f" ChatPy V2 | {status_icon} {username} | {active_tab} | {theme} ",
         style=header_style,
     )
     layout["header"].update(header_text)
 
-    # 2. Chat (Histórico de mensagens do canal/DM ativo)
-    # P0-FIX: computa indicadores de digitação ativos para a aba atual
-    # e os prepende ao conteúdo (uma linha só, separada do histórico).
+    # --- Chat (mensagens) ---
     import time as _time
     typing_line = ""
     if typing_indicators and active_tab in typing_indicators:
@@ -156,61 +162,112 @@ def create_chat_layout(
         ]
         if active_typers:
             if len(active_typers) == 1:
-                typing_line = f"  ⋯ {active_typers[0]} está digitando..."
+                typing_line = f"  ... {active_typers[0]} esta digitando..."
             elif len(active_typers) <= 3:
-                typing_line = f"  ⋯ {', '.join(active_typers)} estão digitando..."
+                typing_line = f"  ... {', '.join(active_typers)} estao digitando..."
             else:
-                typing_line = f"  ⋯ {len(active_typers)} pessoas estão digitando..."
+                typing_line = f"  ... {len(active_typers)} pessoas estao digitando..."
 
     chat_lines = messages[-100:]
     if typing_line:
         chat_lines = chat_lines + [typing_line]
-    chat_content = "\n".join(chat_lines)
+
+    # Constrói texto do chat com cores
+    chat_text = Text()
+    for i, line in enumerate(chat_lines):
+        if i > 0:
+            chat_text.append("\n")
+        if line.startswith("[Sistema]"):
+            chat_text.append(line, style=colors["msg_system"])
+        elif line.startswith("[Servidor"):
+            chat_text.append(line, style=colors["msg_system"])
+        else:
+            # Tenta colorir timestamp e remetente
+            if line.startswith("[") and "] <" in line:
+                ts_end = line.index("] <")
+                chat_text.append(line[:ts_end + 1], style=colors["msg_time"])
+                rest = line[ts_end + 1:]
+                if "> " in rest:
+                    nick_end = rest.index("> ")
+                    chat_text.append(rest[:nick_end + 1], style=colors["msg_own"] if username in rest[:nick_end] else colors["msg_other"])
+                    chat_text.append(rest[nick_end + 1:])
+                else:
+                    chat_text.append(rest)
+            else:
+                chat_text.append(line, style=colors["msg_other"])
 
     layout["chat"].update(
         Panel(
-            chat_content,
+            chat_text,
             title=f" {active_tab} ",
-            style=colors["panel_style"],
+            title_align="left",
             border_style=colors["border"],
+            padding=(0, 1),
         )
     )
 
-    # 3. Sidebar - Salas Ingressadas
-    rooms_content = ""
-    for r in joined_rooms:
-        if r == active_tab:
-            rooms_content += f"> [bold {colors['active_room_fg']} on {colors['active_room_bg']}]{r}[/bold {colors['active_room_fg']} on {colors['active_room_bg']}]\n"
-        else:
-            rooms_content += f"  {r}\n"
-    layout["rooms_list"].update(
+    # --- Sidebar ---
+    if has_sidebar:
+        # Salas
+        rooms_text = Text()
+        for i, r in enumerate(joined_rooms):
+            if i > 0:
+                rooms_text.append("\n")
+            if r == active_tab:
+                rooms_text.append(f" > {r}", style=colors["room_active"])
+            else:
+                rooms_text.append(f"   {r}", style=colors["room_inactive"])
+
+        layout["rooms_list"].update(
+            Panel(
+                rooms_text,
+                title=" Salas ",
+                title_align="left",
+                border_style=colors["border"],
+                padding=(0, 1),
+            )
+        )
+
+        # Usuários online
+        users_text = Text()
+        for i, u in enumerate(online_users):
+            if i > 0:
+                users_text.append("\n")
+            icon = "+" if u != username else "*"
+            style = colors["user_online"] if u != username else f"bold {colors['user_online']}"
+            users_text.append(f" {icon} {u}", style=style)
+
+        if not online_users:
+            users_text.append(" (ninguem online)", style="bright_black")
+
+        layout["users_list"].update(
+            Panel(
+                users_text,
+                title=" Online ",
+                title_align="left",
+                border_style=colors["border"],
+                padding=(0, 1),
+            )
+        )
+
+    # --- Footer (input) ---
+    footer_text = Text()
+    footer_text.append(f" [{active_tab}] > ", style=colors["prompt_arrow"])
+    footer_text.append(current_input, style=colors["input_text"])
+    footer_text.append(" ", style=colors["cursor"])
+
+    # Dica na segunda linha do footer
+    if has_sidebar:
+        footer_text.append("\n TAB:proxima aba | /help:comandos | /quit:sair", style="bright_black")
+    else:
+        footer_text.append("\n /help:comandos | /quit:sair", style="bright_black")
+
+    layout["footer"].update(
         Panel(
-            rooms_content.rstrip(),
-            title=" Salas ",
-            style=colors["panel_style"],
+            footer_text,
             border_style=colors["border"],
+            padding=(0, 1),
         )
     )
-
-    # 4. Sidebar - Usuários Online
-    users_content = ""
-    for u in online_users:
-        users_content += f" • {u}\n"
-    layout["users_list"].update(
-        Panel(
-            users_content.rstrip(),
-            title=" Online ",
-            style=colors["panel_style"],
-            border_style=colors["border"],
-        )
-    )
-
-    # 5. Footer (Linha de entrada interativa)
-    prompt_text = Text.assemble(
-        (f"[{active_tab}] > ", colors["prompt_arrow"]),
-        (current_input, colors["input_text"]),
-        ("█", colors["cursor"]),  # Cursor simulado
-    )
-    layout["footer"].update(prompt_text)
 
     return layout

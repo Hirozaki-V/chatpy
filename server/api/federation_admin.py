@@ -9,13 +9,41 @@ enquanto qualquer usuário autenticado pode administrar peers, o que é
 aceitável para servidores single-admin).
 """
 import uuid
+import ipaddress
+import logging
 from typing import List, Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from server.database.connection import get_db_api
 from server.database.models import User, ServerPeer
 from server.api.dependencies import require_admin
+
+logger = logging.getLogger("chatpy.federation_admin")
+
+
+def _is_safe_domain(domain: str) -> bool:
+    """
+    Valida que o domínio não aponta para rede interna/loopback.
+    Previne SSRF: um admin malicioso não pode usar discover_peer para
+    escanear redes internas (AWS metadata, Redis, etc).
+    """
+    import socket
+    try:
+        # Tenta resolver o domínio para IP
+        addrinfos = socket.getaddrinfo(domain, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for family, _, _, _, sockaddr in addrinfos:
+            ip_str = sockaddr[0]
+            ip = ipaddress.ip_address(ip_str)
+            # Bloqueia loopback, link-local, private, reserved
+            if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
+                logger.warning("SSRF bloqueado: domínio '%s' resolve para IP privado/reservado %s", domain, ip_str)
+                return False
+        return True
+    except (socket.gaierror, ValueError):
+        # Se não conseguir resolver, permite (pode ser domínio válido offline)
+        return True
 
 router = APIRouter(prefix="/api/admin/peers", tags=["federation-admin"])
 
@@ -72,11 +100,31 @@ def register_peer(
             detail="trust_level deve ser: trusted, verified ou blocked",
         )
 
-    # Normaliza domain (remove protocolo se vier)
+    # Normaliza domain (remove protocolo sevier)
     domain = req.domain.lower().strip()
     if "://" in domain:
-        from urllib.parse import urlparse
         domain = urlparse(domain).netloc or domain
+
+    # SECURITY: valida que o domínio não aponta para rede interna (anti-SSRF)
+    if not _is_safe_domain(domain):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Domínio aponta para rede interna/reservada. Operação não permitida por segurança.",
+        )
+
+    # Valida base_url contra SSRF também
+    try:
+        parsed_url = urlparse(req.base_url)
+        url_host = parsed_url.hostname or ""
+        if url_host and not _is_safe_domain(url_host):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="base_url aponta para rede interna/reservada. Operação não permitida por segurança.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     existing = db.query(ServerPeer).filter(ServerPeer.domain == domain).first()
     if existing:
@@ -117,8 +165,14 @@ def discover_peer(
 
     domain = req.domain.lower().strip()
     if "://" in domain:
-        from urllib.parse import urlparse
         domain = urlparse(domain).netloc or domain
+
+    # SECURITY: valida que o domínio não aponta para rede interna (anti-SSRF)
+    if not _is_safe_domain(domain):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Domínio aponta para rede interna/reservada. Operação não permitida por segurança.",
+        )
 
     # Tenta HTTPS primeiro, depois HTTP
     well_known_url = f"https://{domain}/.well-known/chatpy.json"
@@ -148,6 +202,20 @@ def discover_peer(
     # Valida campos obrigatórios
     base_url = info.get("base_url") or f"https://{domain}"
     public_key = info.get("public_key")
+
+    # SECURITY: valida que o base_url retornado não aponta para rede interna
+    try:
+        parsed_base = urlparse(base_url)
+        base_host = parsed_base.hostname or ""
+        if base_host and not _is_safe_domain(base_host):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Peer retornou base_url apontando para rede interna: {base_url}",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     # Cadastra/atualiza
     from server.federation import register_peer

@@ -1,16 +1,19 @@
 # Dependências de runtime do servidor ChatPy V2
-fastapi==0.115.12
-uvicorn==0.34.2
-sqlalchemy==2.0.49
-argon2-cffi==25.1.0
-pydantic==2.11.3
-cryptography==49.0.0
-PyJWT==2.10.1
-websockets==15.0.1
-httpx==0.28.1
-python-multipart==0.0.32
+# Usa versões flexíveis (>=) para compatibilidade com diferentes versões de Python.
+# Se Python 3.14+, pydantic pode precisar compilar pydantic-core (requer Rust).
+# Recomendado: Python 3.11 ou 3.12 para instalação sem compilação.
+fastapi>=0.115.0
+uvicorn>=0.34.0
+sqlalchemy>=2.0.0
+argon2-cffi>=23.1.0
+pydantic>=2.10.0
+cryptography>=44.0.0
+PyJWT>=2.8.0
+websockets>=13.0
+httpx>=0.27.0
+python-multipart>=0.0.7
 # Carrega variáveis de arquivo .env em desenvolvimento
-python-dotenv==1.0.1
+python-dotenv>=1.0.0
 # P2-7: métricas Prometheus (opcional — servidor funciona sem, mas /metrics
 # retorna apenas um comentário explicativo se não estiver instalado)
 prometheus_client>=0.17.0

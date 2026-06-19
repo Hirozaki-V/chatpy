@@ -667,15 +667,21 @@ def get_reactions(
         MessageReaction.message_id == message_id,
     ).all()
 
+    # Pré-carrega usernames em batch (evita N+1 queries)
+    user_ids = list({r.user_id for r in reactions})
+    users_map = {}
+    if user_ids:
+        users = db.query(User).filter(User.id.in_(user_ids)).all()
+        users_map = {u.id: u.username for u in users}
+
     # Agrupa por emoji
     grouped = {}
     for r in reactions:
         if r.emoji not in grouped:
             grouped[r.emoji] = []
-        user = db.query(User).filter(User.id == r.user_id).first()
         grouped[r.emoji].append({
             "user_id": str(r.user_id),
-            "username": user.username if user else "Desconhecido",
+            "username": users_map.get(r.user_id, "Desconhecido"),
         })
 
     return {"reactions": grouped}

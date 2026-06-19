@@ -32,12 +32,36 @@ def main():
         start_server()
         return
 
+    # --create-admin-only: apenas cria usuário admin (chamado pelo chatpy.bat)
+    if "--create-admin-only" in sys.argv:
+        sys.path.insert(0, os.path.dirname(__file__))
+        create_admin_user()
+        return
+
+    # --create-admin: cria admin com argumentos (sem prompt interativo)
+    if "--create-admin" in sys.argv:
+        sys.path.insert(0, os.path.dirname(__file__))
+        import argparse
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--create-admin", action="store_true")
+        parser.add_argument("--username", type=str, default=None)
+        parser.add_argument("--password", type=str, default=None)
+        args, _ = parser.parse_known_args()
+        create_admin_direct(args.username, args.password)
+        return
+
     # 1. Verifica Python
     ver = sys.version_info
     if ver.major < 3 or ver.minor < 10:
         print(f"❌ Python 3.10+ necessário. Você tem {ver.major}.{ver.minor}.")
         sys.exit(1)
     print(f"✅ Python {ver.major}.{ver.minor}.{ver.micro} detectado ({platform.system()})")
+    if ver.minor >= 14:
+        print()
+        print("⚠️  AVISO: Python 3.14+ é muito recente. Algumas dependências podem")
+        print("   precisar de compilação Rust (pydantic-core). Se a instalação falhar,")
+        print("   recomendamos Python 3.12: https://python.org/downloads")
+        print()
 
     # 2. Instala dependências
     print()
@@ -98,8 +122,17 @@ def install_dependencies():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
         print("✅ Dependências instaladas com sucesso!")
     except subprocess.CalledProcessError:
-        print("❌ Falha ao instalar dependências. Tente manualmente:")
-        print(f"   pip install -r {req_file}")
+        print("❌ Falha ao instalar dependências.")
+        print()
+        ver = sys.version_info
+        if ver.minor >= 14:
+            print("   Causa provável: Python 3.14+ precisa compilar pydantic-core (requer Rust).")
+            print("   Soluções:")
+            print("     1. Instale Python 3.12 de https://python.org/downloads")
+            print("     2. Ou instale Rust de https://rustup.rs e tente novamente")
+        else:
+            print(f"   Tente manualmente: pip install -r {req_file}")
+        print()
         sys.exit(1)
 
 
@@ -220,6 +253,60 @@ def create_admin_user():
                 db.flush()
                 print(f"✅ Usuário '{username}' criado com privilégios de ADMINISTRADOR!")
                 print("   (primeiro usuário do servidor — promoção automática)")
+            else:
+                print(f"✅ Usuário '{username}' criado com sucesso!")
+            db.commit()
+        except (ValidationError, UsernameTakenError) as e:
+            print(f"❌ Erro: {e}")
+            db.rollback()
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"❌ Erro ao criar usuário: {e}")
+
+
+def create_admin_direct(username=None, password=None):
+    """Cria admin sem prompts interativos — para uso via chatpy.bat."""
+    import getpass
+
+    if not username:
+        username = input("Apelido: ").strip()
+    if not username:
+        print("Apelido vazio — cancelado.")
+        return
+
+    if not password:
+        password = getpass.getpass("Senha (mín 8 chars, com letra e número): ")
+
+    if len(password) < 8:
+        print("❌ Senha muito curta. Mínimo 8 caracteres.")
+        return
+    has_letter = any(c.isalpha() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    if not (has_letter and has_digit):
+        print("❌ A senha deve conter ao menos uma letra e um número.")
+        return
+
+    if not password:
+        password_confirm = getpass.getpass("Confirme a senha: ")
+        if password != password_confirm:
+            print("❌ As senhas não coincidem.")
+            return
+
+    try:
+        from server.database.connection import SessionLocal, init_db
+        from server.auth.service import registrar_usuario, ValidationError, UsernameTakenError
+        from server.database.models import User
+
+        init_db()
+        db = SessionLocal()
+        try:
+            existing_count = db.query(User).count()
+            user = registrar_usuario(db, username, password)
+            if existing_count == 0:
+                user.is_admin = True
+                db.flush()
+                print(f"✅ Usuário '{username}' criado como ADMINISTRADOR!")
             else:
                 print(f"✅ Usuário '{username}' criado com sucesso!")
             db.commit()

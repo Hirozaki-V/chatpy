@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Integer, Index
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.types import TypeDecorator, CHAR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -80,6 +80,9 @@ class Room(Base):
 
 class RoomMember(Base):
     __tablename__ = "room_members"
+    __table_args__ = (
+        Index("ix_room_members_room_user", "room_id", "user_id"),
+    )
 
     room_id = Column(GUID, ForeignKey("rooms.id"), primary_key=True)
     user_id = Column(GUID, ForeignKey("users.id"), primary_key=True)
@@ -93,6 +96,9 @@ class RoomMember(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_room_timestamp", "room_id", "timestamp"),
+    )
 
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     room_id = Column(GUID, ForeignKey("rooms.id"), nullable=False)
@@ -130,6 +136,9 @@ class MessageReaction(Base):
 
 class PrivateMessage(Base):
     __tablename__ = "private_messages"
+    __table_args__ = (
+        Index("ix_private_messages_sender_receiver", "sender_id", "receiver_id"),
+    )
 
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     sender_id = Column(GUID, ForeignKey("users.id"), nullable=False)
@@ -153,6 +162,9 @@ class PrivateMessage(Base):
 
 class Friendship(Base):
     __tablename__ = "friendships"
+    __table_args__ = (
+        Index("ix_friendships_user_friend", "user_id", "friend_id"),
+    )
 
     user_id = Column(GUID, ForeignKey("users.id"), primary_key=True)
     friend_id = Column(GUID, ForeignKey("users.id"), primary_key=True)

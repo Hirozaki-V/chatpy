@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+import logging
 from server.database.connection import get_db_api
 from server.database.models import User, Session as DbSessionModel
 from server.api.dependencies import get_current_user
@@ -14,6 +15,8 @@ from server.auth.service import (
     ValidationError,
     TooManyAttemptsError,
 )
+
+logger = logging.getLogger("chatpy.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -103,9 +106,10 @@ def create_guest_account(request: Request, db: Session = Depends(get_db_api)):
         return AuthSuccessResponse(status="success", token=token)
     except Exception as e:
         db.rollback()
+        logger.error("Erro ao criar conta de convidado: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao criar conta de convidado: {e}",
+            detail="Erro interno ao criar conta de convidado. Tente novamente.",
         )
 
 

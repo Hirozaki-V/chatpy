@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import asyncio
 import signal as _signal
 from collections import deque
@@ -130,6 +131,9 @@ class ClientState:
         # background (outra aba/janela) e o usuário quer saber que chegou
         # DM. Default ligado; /beep off desativa.
         self.beep_enabled: bool = True
+        # Controle de debounce para indicador de digitação (typing indicator).
+        # {tab_name: timestamp_do_ultimo_envio} — usado por _maybe_send_typing_indicator.
+        self._last_typing_sent: dict = {}
 
 
 # Janela de tempo (em segundos) que o indicador de digitação permanece visível
@@ -344,6 +348,11 @@ async def handle_ws_event(event: str, payload: dict, api: ApiClient):
                 formatted_msg += att_line
 
             if room_id:
+                # Filtra mensagens próprias em salas — o echo local já as
+                # adicionou em process_chat_message. Sem este filtro, cada
+                # mensagem enviada aparece DUAS vezes (echo + broadcast).
+                if sender_name == state.username:
+                    return
                 room_name = next(
                     (name for name, uid in state.room_uuid_map.items() if uid == room_id), None
                 )
@@ -1645,6 +1654,16 @@ async def process_chat_message(content: str, api: ApiClient, ws: WebSocketClient
             return
         try:
             await ws.send_room_message(room_uuid, content)
+            # Echo local: mostra a mensagem imediatamente para o remetente.
+            # Sem isto, se o WS estiver lento ou desconectado, o usuário
+            # vê nada acontecer — parece que a mensagem "sumiu".
+            t = datetime.now().strftime("%H:%M")
+            state.messages[state.active_tab].append(f"[{t}] <{state.username}> {content}")
+            # Se WS está desconectado, a mensagem foi para fila offline
+            if not ws._connected:
+                state.messages[state.active_tab].append(
+                    "[Sistema] ⚠ Mensagem enfileirada (sem conexão). Será enviada ao reconectar."
+                )
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Falha ao enviar mensagem: {e}")
 
@@ -1660,42 +1679,85 @@ async def process_chat_message(content: str, api: ApiClient, ws: WebSocketClient
             await ws.send_private_message(target_uuid, content)
             t = datetime.now().strftime("%H:%M")
             state.messages[state.active_tab].append(f"[{t}] <{state.username}> {content}")
+            # Se WS está desconectado, a mensagem foi para fila offline
+            if not ws._connected:
+                state.messages[state.active_tab].append(
+                    "[Sistema] ⚠ Mensagem enfileirada (sem conexão). Será enviada ao reconectar."
+                )
         except Exception as e:
             state.messages[state.active_tab].append(f"[Sistema] Falha ao enviar mensagem privada: {e}")
 
 
 async def input_poller_windows(input_queue: asyncio.Queue, ws=None):
-    """Captura e renderiza caracteres digitados no console de forma não-bloqueante no Windows."""
-    current_input = ""
-    while state.running:
-        if msvcrt.kbhit():
-            ch = msvcrt.getwch()
-            if ch in ("\r", "\n"):
-                if current_input.strip():
-                    await input_queue.put(current_input)
-                current_input = ""
-            elif ch in ("\b", "\x08", "\x7f"):
-                current_input = current_input[:-1]
-            elif ch == "\t":
-                if state.joined_rooms:
-                    idx = state.joined_rooms.index(state.active_tab)
-                    next_idx = (idx + 1) % len(state.joined_rooms)
-                    state.active_tab = state.joined_rooms[next_idx]
-            elif ord(ch) == 224:
-                msvcrt.getwch()
-            elif ord(ch) >= 32:
-                current_input += ch
+    """
+    Captura caracteres digitados no console Windows.
 
-            state.current_input = current_input
-            # UX FIX (auditoria-2026-06): envia typing indicator para o
-            # servidor (debounce 2s). Antes, a CLI nunca enviava — usuários
-            # desktop nunca viam "CLI-user está digitando". Paridade unilateral.
-            _maybe_send_typing_indicator(ws)
+    CORREÇÃO: roda em thread separada via asyncio.to_thread para não
+    conflitar com o Rich Live refresh. Antes rodava direto no event
+    loop — o Live re-renderizava a tela e "engolía" o próximo caractere
+    do msvcrt, fazendo só a primeira letra aparecer.
+    """
+    # Captura o event loop ANTES de entrar na thread — asyncio.get_event_loop()
+    # de dentro de uma thread secundária é deprecado desde Python 3.10 e
+    # pode falhar em 3.12+.
+    loop = asyncio.get_running_loop()
 
-        await asyncio.sleep(0.01)
+    def _blocking_input_loop():
+        current_input = ""
+        while state.running:
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    if current_input.strip():
+                        asyncio.run_coroutine_threadsafe(
+                            input_queue.put(current_input), loop
+                        )
+                    current_input = ""
+                elif ch in ("\b", "\x08", "\x7f"):
+                    current_input = current_input[:-1]
+                elif ch == "\t":
+                    if current_input and "@" in current_input:
+                        last_at = current_input.rfind("@")
+                        partial = current_input[last_at + 1:].lower()
+                        candidates = [
+                            u for u in (state.online_users + list(state.user_uuid_map.keys()))
+                            if u.lower().startswith(partial) and u != state.username
+                        ]
+                        seen = set()
+                        unique_candidates = []
+                        for c in candidates:
+                            if c not in seen:
+                                seen.add(c)
+                                unique_candidates.append(c)
+                        if len(unique_candidates) == 1:
+                            current_input = current_input[:last_at + 1] + unique_candidates[0] + " "
+                        elif len(unique_candidates) > 1:
+                            prefix = unique_candidates[0]
+                            for c in unique_candidates[1:]:
+                                while not c.lower().startswith(prefix.lower()):
+                                    prefix = prefix[:-1]
+                            if len(prefix) > len(partial):
+                                current_input = current_input[:last_at + 1] + prefix
+                    elif state.joined_rooms:
+                        try:
+                            idx = state.joined_rooms.index(state.active_tab)
+                            next_idx = (idx + 1) % len(state.joined_rooms)
+                            state.active_tab = state.joined_rooms[next_idx]
+                        except ValueError:
+                            pass
+                elif ord(ch) == 224:
+                    msvcrt.getwch()
+                elif ord(ch) >= 32:
+                    current_input += ch
+
+                state.current_input = current_input
+
+            time.sleep(0.01)
+
+    await asyncio.to_thread(_blocking_input_loop)
 
 
-def _maybe_send_typing_indicator(ws):
+async def _maybe_send_typing_indicator(ws):
     """Envia user.typing para a aba ativa no máximo 1x a cada 2s (debounce)."""
     import time as _t
     if not state.show_typing:
@@ -1712,12 +1774,12 @@ def _maybe_send_typing_indicator(ws):
         if tab.startswith("#"):
             room_uuid = state.room_uuid_map.get(tab)
             if room_uuid:
-                ws.send_typing_room(room_uuid)
+                await ws.send_typing_room(room_uuid)
         elif tab.startswith("@"):
             target_user = tab[1:]
             receiver_uuid = state.user_uuid_map.get(target_user)
             if receiver_uuid:
-                ws.send_typing_dm(receiver_uuid)
+                await ws.send_typing_dm(receiver_uuid)
     except Exception:
         # Typing indicator é best-effort — não deve quebrar o input
         pass
@@ -1821,7 +1883,7 @@ async def input_poller_fallback(input_queue: asyncio.Queue, ws=None):
                 await input_queue.put(line)
             state.current_input = ""
             # UX FIX: typing indicator (debounce 2s) — paridade com Desktop
-            _maybe_send_typing_indicator(ws)
+            await _maybe_send_typing_indicator(ws)
         except (EOFError, KeyboardInterrupt):
             # Ctrl+D ou Ctrl+C encerram o cliente
             state.running = False
@@ -1860,6 +1922,16 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
     auto_away_active = False
 
     with Live(auto_refresh=False) as live:
+        # Controle de dirty flag — só re-renderiza quando algo mudou.
+        # Sem isto, o loop reconstrói o layout inteiro Rich 20x/segundo
+        # (Text, Panel, Layout) mesmo quando nada mudou, consumindo CPU
+        # desnecessariamente e causando travamentos em terminais lentos.
+        _dirty = True
+        _last_msg_count = {state.active_tab: len(state.messages.get(state.active_tab, []))}
+        _last_input = state.current_input
+        _last_active_tab = state.active_tab
+        _last_online_count = len(state.online_users)
+
         while state.running:
             # P0-FIX: limpa indicadores de digitação expirados (mais de TYPING_TTL_S)
             # para evitar acúmulo infinito no dict. Faz isto a cada render frame.
@@ -1874,25 +1946,42 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
                     del state.typing_indicators[tab_name][u]
                 if not state.typing_indicators[tab_name]:
                     del state.typing_indicators[tab_name]
+                    _dirty = True
+                elif expired:
+                    _dirty = True
 
-            # MEMORY LEAK FIX: state.messages agora usa deque. Convertemos
-            # para lista para passar à UI (interface.py usa slicing [-100:]
-            # que não é suportado por deque).
-            _raw_msgs = state.messages.get(state.active_tab, [])
-            if hasattr(_raw_msgs, "__iter__") and not isinstance(_raw_msgs, list):
-                _raw_msgs = list(_raw_msgs)
-            layout = create_chat_layout(
-                username=state.username,
-                status=state.status,
-                active_tab=state.active_tab,
-                messages=_raw_msgs,
-                joined_rooms=state.joined_rooms,
-                online_users=state.online_users,
-                current_input=state.current_input,
-                typing_indicators=state.typing_indicators,
-                typing_ttl_s=TYPING_TTL_S,
-            )
-            live.update(layout, refresh=True)
+            # Detecta mudanças de estado para evitar re-render desnecessário
+            cur_msg_count = len(state.messages.get(state.active_tab, []))
+            if (cur_msg_count != _last_msg_count.get(state.active_tab, 0)
+                    or state.current_input != _last_input
+                    or state.active_tab != _last_active_tab
+                    or len(state.online_users) != _last_online_count):
+                _dirty = True
+                _last_msg_count[state.active_tab] = cur_msg_count
+                _last_input = state.current_input
+                _last_active_tab = state.active_tab
+                _last_online_count = len(state.online_users)
+
+            if _dirty:
+                # MEMORY LEAK FIX: state.messages agora usa deque. Convertemos
+                # para lista para passar à UI (interface.py usa slicing [-100:]
+                # que não é suportado por deque).
+                _raw_msgs = state.messages.get(state.active_tab, [])
+                if hasattr(_raw_msgs, "__iter__") and not isinstance(_raw_msgs, list):
+                    _raw_msgs = list(_raw_msgs)
+                layout = create_chat_layout(
+                    username=state.username,
+                    status=state.status,
+                    active_tab=state.active_tab,
+                    messages=_raw_msgs,
+                    joined_rooms=state.joined_rooms,
+                    online_users=state.online_users,
+                    current_input=state.current_input,
+                    typing_indicators=state.typing_indicators,
+                    typing_ttl_s=TYPING_TTL_S,
+                )
+                live.update(layout, refresh=True)
+                _dirty = False
 
             try:
                 line = input_queue.get_nowait()
@@ -1911,6 +2000,7 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
                     await process_user_command(line, api, ws)
                 else:
                     await process_chat_message(line, api, ws)
+                _dirty = True  # Força re-render após processar input
             except asyncio.QueueEmpty:
                 pass
 
@@ -1928,6 +2018,7 @@ async def live_chat_loop(api: ApiClient, ws: WebSocketClient):
                         state.messages[state.active_tab].append(
                             "[Sistema] Você ficou ocioso — status alterado para 'away' automaticamente."
                         )
+                        _dirty = True
                     except Exception:
                         pass
 
@@ -1998,12 +2089,15 @@ def main(
     console.print("[bold green]========================================[/bold green]\n")
 
     # #7: Descoberta de servidores na LAN via mDNS
-    if host == "127.0.0.1":
+    # Só faz discovery quando NÃO está conectando em localhost (o servidor
+    # já está na máquina local). Para hosts remotos, faz discovery para
+    # encontrar alternativas na LAN.
+    if host not in ("127.0.0.1", "localhost", "::1"):
         try:
             from server.lan_discovery import discover_servers, is_lan_discovery_enabled
             if is_lan_discovery_enabled():
                 console.print("[dim]Procurando servidores ChatPy na rede local...[/dim]")
-                servers = discover_servers(timeout=2.0)
+                servers = discover_servers(timeout=1.0)
                 if servers:
                     console.print(f"[cyan]📡 {len(servers)} servidor(es) encontrado(s) na LAN:[/cyan]")
                     for i, s in enumerate(servers):
@@ -2018,7 +2112,7 @@ def main(
         except Exception:
             pass
 
-    # Healthcheck antes de tentar login
+    # Healthcheck antes de tentar login (timeout curto para não atrasar o menu)
     health = api.health()
 
     # #9: Check de versão — notifica se há update disponível
@@ -2107,12 +2201,37 @@ def main(
                 console.print(f"\n[bold red]Falha no Login:[/bold red] {friendly}\n")
 
         elif choice == "2":
+            # Validação de senha com confirmação (paridade com Desktop)
             try:
+                # Validação local de username
+                if len(username) < 3:
+                    console.print("\n[bold red]O apelido deve ter no minimo 3 caracteres.[/bold red]\n")
+                    continue
+                if " " in username:
+                    console.print("\n[bold red]O apelido nao pode conter espacos.[/bold red]\n")
+                    continue
+
+                # Validação local de senha
+                if len(password) < 8:
+                    console.print("\n[bold red]A senha deve ter no minimo 8 caracteres.[/bold red]\n")
+                    continue
+                has_letter = any(c.isalpha() for c in password)
+                has_digit = any(c.isdigit() for c in password)
+                if not (has_letter and has_digit):
+                    console.print("\n[bold red]A senha deve conter ao menos uma letra e um numero.[/bold red]\n")
+                    continue
+
+                # Confirmação de senha
+                password_confirm = Prompt.ask("Confirme a senha", password=True)
+                if password != password_confirm:
+                    console.print("\n[bold red]As senhas nao coincidem. Tente novamente.[/bold red]\n")
+                    continue
+
                 with console.status("[green]Cadastrando nova conta...[/green]"):
                     created_username = api.register(username, password)
                 console.print(
                     f"\n[bold green]Conta '{created_username}' criada com sucesso![/bold green] "
-                    "Faça login para entrar.\n"
+                    "Faca login para entrar.\n"
                 )
             except Exception as e:
                 friendly = _friendly_auth_error(e, "registro")
